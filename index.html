@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLIGHTLOG // Cockpit Logbook</title>
+<link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Archivo:wght@500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div class="bezel-frame">
+
+  <header class="topbar">
+    <div class="topbar-id">
+      <span class="lamp" id="lamp"></span>
+      <div class="topbar-title">
+        <span class="brand">FLIGHTLOG</span>
+        <span class="brand-sub">PERSONAL FLIGHT DATA RECORDER</span>
+      </div>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-tab="dashboard">DASHBOARD</button>
+      <button class="tab" data-tab="sva">SOUTHWEST VIRTUAL</button>
+      <button class="tab" data-tab="add">LOG FLIGHT</button>
+      <button class="tab" data-tab="logbook">LOGBOOK</button>
+      <button class="tab" data-tab="data">DATA</button>
+    </nav>
+  </header>
+
+  <main id="view"></main>
+
+  <footer class="statusbar">
+    <span id="statusLeft">STANDBY</span>
+    <span id="statusRight"></span>
+  </footer>
+</div>
+
+<template id="tpl-dashboard">
+  <section class="panel-grid">
+    <div class="dial-row" id="dash-dials"></div>
+
+    <div class="card chart-card">
+      <div class="card-head"><span class="card-label">01</span><h3>LANDING RATE — FPM AT TOUCHDOWN</h3></div>
+      <canvas id="chartRate" height="220"></canvas>
+      <div class="legend-strip">
+        <span><i class="dot dot-amber"></i>NORMAL</span>
+        <span><i class="dot dot-cyan"></i>SHARED COCKPIT (EXCLUDED)</span>
+        <span><i class="dot dot-yellow"></i>WINDSHEAR</span>
+        <span><i class="dot dot-green"></i>NOTES ATTACHED</span>
+      </div>
+    </div>
+
+    <div class="card chart-card">
+      <div class="card-head"><span class="card-label">02</span><h3>LANDING G — VERTICAL LOAD</h3></div>
+      <canvas id="chartG" height="220"></canvas>
+    </div>
+
+    <div class="card chart-card">
+      <div class="card-head"><span class="card-label">03</span><h3>HOURS FLOWN BY MONTH</h3></div>
+      <canvas id="chartHours" height="200"></canvas>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><span class="card-label">04</span><h3>AIRPORTS VISITED</h3></div>
+      <div class="table-scroll" id="airportTable"></div>
+    </div>
+  </section>
+</template>
+
+<template id="tpl-sva">
+  <section class="panel-grid">
+    <div class="dial-row" id="sva-dials"></div>
+
+    <div class="card">
+      <div class="card-head"><span class="card-label">05</span><h3>SENIORITY PROGRESSION — AVG LANDING RATE / G</h3></div>
+      <div class="table-scroll" id="svaRankTable"></div>
+    </div>
+
+    <div class="card chart-card">
+      <div class="card-head"><span class="card-label">06</span><h3>TFP ACCRUED OVER TIME</h3></div>
+      <canvas id="chartTFP" height="220"></canvas>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><span class="card-label">07</span><h3>SVA DESTINATIONS</h3></div>
+      <div class="table-scroll" id="svaAirportTable"></div>
+    </div>
+  </section>
+</template>
+
+<template id="tpl-add">
+  <section class="form-wrap">
+    <form class="card form-card" id="flightForm">
+      <div class="card-head"><span class="card-label">NEW</span><h3>LOG FLIGHT</h3></div>
+
+      <div class="grid-2">
+        <label>DEP <input required maxlength="4" id="f-dep" placeholder="KHOU" class="mono upper"></label>
+        <label>ARR <input required maxlength="4" id="f-arr" placeholder="KDAL" class="mono upper"></label>
+      </div>
+      <div class="grid-2">
+        <label>FLIGHT # <input required id="f-flightnum" placeholder="SWA20" class="mono upper"></label>
+        <label>AIRCRAFT <input required id="f-aircraft" placeholder="B738" class="mono upper" maxlength="6"></label>
+      </div>
+      <div class="grid-2">
+        <label>DATE <input required type="date" id="f-date" class="mono"></label>
+        <label>ELAPSED (HRS) <input required type="number" step="0.1" min="0" id="f-elapsed" class="mono"></label>
+      </div>
+      <div class="grid-2">
+        <label>LANDING RATE (FPM) <input required type="number" step="0.1" id="f-landingrate" class="mono" placeholder="-307.6"></label>
+        <label>LANDING G <input required type="number" step="0.01" min="0" id="f-landingg" class="mono" placeholder="1.59"></label>
+      </div>
+
+      <div class="toggle-row">
+        <label class="check"><input type="checkbox" id="f-shared"> SHARED COCKPIT</label>
+        <label class="check"><input type="checkbox" id="f-windshear"> WINDSHEAR AFFECTED</label>
+      </div>
+
+      <div class="grid-2 shared-only hidden" id="sharedFields">
+        <label>EXCLUDE FROM AVG RATES <input type="checkbox" id="f-exclude" checked></label>
+        <label>ROLE THIS LEG
+          <select id="f-role" class="mono">
+            <option value="">—</option>
+            <option value="PF TO/PF LDG">PF TO / PF LDG</option>
+            <option value="PF TO/PM LDG">PF TO / PM LDG</option>
+            <option value="PM TO/PF LDG">PM TO / PF LDG</option>
+            <option value="PM TO/PM LDG">PM TO / PM LDG</option>
+          </select>
+        </label>
+      </div>
+
+      <hr class="divider">
+
+      <label class="check sva-toggle"><input type="checkbox" id="f-issva"> LOG TO SOUTHWEST VIRTUAL TRACKER</label>
+
+      <div class="grid-2 sva-only hidden" id="svaFields">
+        <label>TFP (HRS) <input type="number" step="0.01" min="0" id="f-tfp" class="mono" placeholder="1.0"></label>
+        <label>SENIORITY RANK
+          <select id="f-rank" class="mono">
+            <option value="">—</option>
+            <option>NEW HIRE</option>
+            <option>IOE PILOT</option>
+            <option>JUNIOR FIRST OFFICER</option>
+            <option>FIRST OFFICER</option>
+            <option>SENIOR FIRST OFFICER</option>
+          </select>
+        </label>
+      </div>
+
+      <label class="full">NOTES <textarea id="f-notes" rows="2" placeholder="MANUAL REPORT, WINDSHEAR ON FINAL, etc."></textarea></label>
+
+      <div class="form-actions">
+        <button type="submit" class="btn-primary">SUBMIT REPORT</button>
+        <button type="reset" class="btn-ghost">CLEAR</button>
+      </div>
+    </form>
+  </section>
+</template>
+
+<template id="tpl-logbook">
+  <section class="panel-grid single">
+    <div class="card">
+      <div class="card-head row-between">
+        <div><span class="card-label">LOG</span><h3>FLIGHT LOGBOOK</h3></div>
+        <div class="filter-row">
+          <select id="filterSheet" class="mono">
+            <option value="all">ALL FLIGHTS</option>
+            <option value="sva">SVA ONLY</option>
+            <option value="general">GENERAL ONLY</option>
+          </select>
+          <input id="filterSearch" class="mono" placeholder="SEARCH DEP/ARR/FLT#">
+        </div>
+      </div>
+      <div class="table-scroll tall" id="logbookTable"></div>
+    </div>
+  </section>
+</template>
+
+<template id="tpl-data">
+  <section class="panel-grid single">
+    <div class="card">
+      <div class="card-head row-between">
+        <div><span class="card-label">CLOUD</span><h3>CLOUD SYNC — SUPABASE</h3></div>
+        <span class="sync-pill" id="syncPill">DISCONNECTED</span>
+      </div>
+      <p class="hint" id="cloudIntro">Connect a free Supabase project to back this logbook up to the cloud. Until connected, everything stays local-only — Export/Import JSON below always works offline regardless of cloud status.</p>
+
+      <div id="cloudSetup">
+        <div class="grid-2">
+          <label>PROJECT URL <input id="c-url" class="mono" placeholder="https://xxxx.supabase.co"></label>
+          <label>ANON KEY <input id="c-key" class="mono" placeholder="eyJ..."></label>
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" id="connectCloud">CONNECT</button>
+        </div>
+      </div>
+
+      <div id="cloudConnected" class="hidden">
+        <div class="form-actions">
+          <button class="btn-primary" id="syncNow">SYNC NOW</button>
+          <button class="btn-ghost" id="disconnectCloud">DISCONNECT</button>
+        </div>
+        <p class="hint mono" id="syncStatus"></p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><span class="card-label">I/O</span><h3>IMPORT EXISTING SPREADSHEET</h3></div>
+      <p class="hint">Upload your LOGBOOK.xlsx or SVA_FLIGHT_TRACKER.xlsx to migrate existing flights. Detects DEP/ARR/FLIGHT#/DATE/ELAPSED/TFP/LANDING R/LANDING G/AIRCRAFT/NOTES/KEY columns automatically. Shared cockpit flights and windshear are auto-flagged from notes text — review after import.</p>
+      <input type="file" id="importFile" accept=".xlsx,.xls">
+      <div id="importStatus" class="hint mono"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-label">EXP</span><h3>BACKUP / RESTORE (OFFLINE-SAFE)</h3></div>
+      <p class="hint">Works with no internet connection, independent of cloud sync. Export a JSON backup regularly, or move it to another device.</p>
+      <div class="form-actions">
+        <button class="btn-primary" id="exportJson">EXPORT JSON</button>
+        <button class="btn-ghost" id="exportCsv">EXPORT CSV</button>
+        <label class="btn-ghost file-btn">RESTORE JSON<input type="file" id="restoreFile" accept=".json" hidden></label>
+      </div>
+      <hr class="divider">
+      <button class="btn-danger" id="wipeData">ERASE ALL DATA</button>
+    </div>
+  </section>
+</template>
+
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-adapter-date-fns/3.0.0/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
