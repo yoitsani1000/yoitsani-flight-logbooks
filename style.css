@@ -295,10 +295,36 @@ textarea{resize:vertical;font-family:var(--disp);font-size:0.85rem;color:var(--t
 .btn-danger:hover{background:var(--red);color:#1a0000;}
 .file-btn{display:inline-flex;align-items:center;justify-content:center;}
 
-.filter-row{display:flex;gap:8px;flex-wrap:wrap;}
-.filter-row input,.filter-row select{font-size:0.68rem;padding:7px 9px;}
+.filter-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;}
+.filter-row input,.filter-row select{font-size:0.7rem;padding:9px 9px;min-height:40px;}
+.filter-row input{font-size:16px;flex:1 1 160px;min-width:140px;}
+.filter-row select{flex:0 1 auto;}
+.filter-row .btn-ghost{padding:9px 14px;min-height:40px;font-size:0.65rem;}
 
 .hint{color:var(--text-dim);font-size:0.78rem;line-height:1.5;margin:0 0 12px;}
+
+.lock-card{max-width:340px;margin:40px auto;text-align:center;}
+.pin-dots{display:flex;justify-content:center;gap:12px;margin:22px 0 8px;}
+.pin-dot{width:14px;height:14px;border-radius:50%;border:2px solid var(--hairline);transition:all .15s ease;}
+.pin-dot.filled{background:var(--amber);border-color:var(--amber);box-shadow:0 0 6px var(--amber);}
+.keypad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px;}
+.keypad button{
+  background:var(--bezel);border:1px solid var(--hairline);color:var(--text);
+  font-family:var(--mono);font-size:1.3rem;font-weight:600;
+  padding:0;border-radius:4px;cursor:pointer;min-height:58px;
+  transition:background .1s ease, border-color .1s ease;
+}
+.keypad button:active{background:var(--panel-raised);border-color:var(--amber);}
+.keypad button.key-ghost{font-size:0.62rem;color:var(--text-dim);letter-spacing:0.05em;font-weight:500;}
+.error-text{color:var(--red) !important;}
+@keyframes shake{
+  0%,100%{transform:translateX(0);}
+  20%{transform:translateX(-8px);}
+  40%{transform:translateX(8px);}
+  60%{transform:translateX(-6px);}
+  80%{transform:translateX(6px);}
+}
+.shake{animation:shake .4s ease;}
 
 .sync-pill{
   font-family:var(--mono);font-size:0.62rem;letter-spacing:0.08em;

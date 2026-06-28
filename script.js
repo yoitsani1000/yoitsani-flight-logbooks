@@ -143,12 +143,25 @@ let charts = {};
 
 tabs.forEach(t=>t.addEventListener('click', ()=>route(t.dataset.tab)));
 
+const GATED_TABS = ['add','data'];
+
+function isUnlocked(){ return sessionStorage.getItem('flightlog_unlocked') === 'true'; }
+
 function route(name){
   tabs.forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
   Object.values(charts).forEach(c=>c && c.destroy());
   charts = {};
-  const tpl = document.getElementById('tpl-'+name);
   view.innerHTML = '';
+
+  if(GATED_TABS.includes(name) && !isUnlocked()){
+    view.appendChild(document.getElementById('tpl-lock').content.cloneNode(true));
+    renderLock(name);
+    document.getElementById('statusLeft').textContent = 'LOCKED // ENTER CODE TO CONTINUE';
+    document.getElementById('statusRight').textContent = new Date().toISOString().slice(0,10);
+    return;
+  }
+
+  const tpl = document.getElementById('tpl-'+name);
   view.appendChild(tpl.content.cloneNode(true));
   if(name==='dashboard') renderDashboard();
   if(name==='sva') renderSVA();
@@ -157,6 +170,60 @@ function route(name){
   if(name==='data') renderData();
   document.getElementById('statusLeft').textContent = name.toUpperCase()+' // ' + DB.flights.length + ' FLIGHTS LOGGED';
   document.getElementById('statusRight').textContent = new Date().toISOString().slice(0,10);
+}
+
+const ACCESS_CODE = '1725873';
+
+function renderLock(targetTab){
+  let buffer = '';
+  const dots = document.querySelectorAll('#pinDots .pin-dot');
+  const hint = document.getElementById('lockHint');
+  const card = document.querySelector('.lock-card');
+
+  function updateDots(){
+    dots.forEach((d,i)=> d.classList.toggle('filled', i < buffer.length));
+  }
+  function showError(){
+    hint.textContent = 'INCORRECT CODE';
+    hint.classList.add('error-text');
+    card.classList.add('shake');
+    setTimeout(()=>{
+      card.classList.remove('shake');
+      buffer = '';
+      updateDots();
+    }, 400);
+  }
+
+  document.querySelectorAll('#keypad button').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const key = btn.dataset.key;
+      if(key === 'clear'){
+        buffer = '';
+        hint.textContent = '\u00a0';
+        hint.classList.remove('error-text');
+        updateDots();
+        return;
+      }
+      if(key === 'back'){
+        buffer = buffer.slice(0, -1);
+        hint.textContent = '\u00a0';
+        hint.classList.remove('error-text');
+        updateDots();
+        return;
+      }
+      if(buffer.length >= ACCESS_CODE.length) return;
+      buffer += key;
+      updateDots();
+      if(buffer.length === ACCESS_CODE.length){
+        if(buffer === ACCESS_CODE){
+          sessionStorage.setItem('flightlog_unlocked', 'true');
+          route(targetTab);
+        } else {
+          showError();
+        }
+      }
+    });
+  });
 }
 
 /* ===================== DIAL CARD BUILDER ===================== */
@@ -185,6 +252,7 @@ function renderDashboard(){
   buildScatter('chartRate', list, 'landingRate', 'FPM');
   buildScatter('chartG', list, 'landingG', 'G');
   buildHoursBar('chartHours', list);
+  buildAircraftChart('chartAircraft', list);
 
   const rows = airportCounts(list);
   document.getElementById('airportTable').innerHTML = tableHtml(
@@ -243,6 +311,81 @@ function buildHoursBar(canvasId, list){
     data:{ labels:keys, datasets:[{ data:keys.map(k=>+map[k].toFixed(1)), backgroundColor: getCss('--amber-dim'), borderColor: getCss('--amber'), borderWidth:1 }]},
     options:{ responsive:true, plugins:{legend:{display:false}},
       scales:{ x:{ticks:{color:getCss('--text-dim')},grid:{display:false}}, y:{ticks:{color:getCss('--text-dim')},grid:{color:getCss('--hairline')}} } }
+  });
+}
+
+function buildAircraftChart(canvasId, list){
+  const ctx = document.getElementById(canvasId);
+  if(!ctx) return;
+  const counts = {};
+  list.forEach(f=>{ const ac = f.aircraft || 'UNKNOWN'; counts[ac] = (counts[ac]||0)+1; });
+  const entries = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+  const total = list.length || 1;
+  const labels = entries.map(e=>e[0]);
+  const values = entries.map(e=>e[1]);
+
+  const basePalette = ['--amber','--cyan','--green','--red','--amber-dim','--cyan-dim'];
+  const colors = labels.map((_,i)=>{
+    if(i < basePalette.length) return getCss(basePalette[i]);
+    // generate extra distinct hues for overflow beyond base palette
+    const hue = (i * 47) % 360;
+    return `hsl(${hue}, 55%, 55%)`;
+  });
+
+  const sliceLabelPlugin = {
+    id:'sliceLabel',
+    afterDatasetsDraw(chart){
+      const c = chart.ctx;
+      const meta = chart.getDatasetMeta(0);
+      c.save();
+      c.font = '600 11px JetBrains Mono, monospace';
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      meta.data.forEach((arc, i)=>{
+        const pct = Math.round((values[i]/total)*100);
+        if(pct < 4) return; // skip labels for slivers, legend still shows them
+        const angle = (arc.startAngle + arc.endAngle) / 2;
+        const radius = (arc.innerRadius + arc.outerRadius) / 2;
+        const x = arc.x + Math.cos(angle) * radius;
+        const y = arc.y + Math.sin(angle) * radius;
+        c.fillStyle = '#10130f';
+        c.fillText(`${pct}%`, x, y);
+      });
+      c.restore();
+    }
+  };
+
+  charts[canvasId] = new Chart(ctx, {
+    type:'pie',
+    data:{ labels, datasets:[{ data: values, backgroundColor: colors, borderColor: getCss('--bg'), borderWidth:2 }]},
+    options:{
+      responsive:true,
+      aspectRatio:1.1,
+      plugins:{
+        legend:{
+          position:'bottom',
+          labels:{
+            color: getCss('--text-dim'),
+            font:{ family:'JetBrains Mono', size:11 },
+            generateLabels(chart){
+              return chart.data.labels.map((l,i)=>{
+                const pct = Math.round((values[i]/total)*100);
+                return {
+                  text:`${l} — ${values[i]} (${pct}%)`,
+                  fillStyle: chart.data.datasets[0].backgroundColor[i],
+                  strokeStyle: chart.data.datasets[0].backgroundColor[i],
+                  index:i
+                };
+              });
+            }
+          }
+        },
+        tooltip:{ callbacks:{
+          label:(c)=> `${c.label}: ${c.parsed} flights (${Math.round((c.parsed/total)*100)}%)`
+        }}
+      }
+    },
+    plugins:[sliceLabelPlugin]
   });
 }
 
@@ -365,9 +508,29 @@ function flashStatus(msg){
 /* ===================== LOGBOOK TABLE ===================== */
 function renderLogbook(){
   const filterSheet = document.getElementById('filterSheet');
+  const filterRank = document.getElementById('filterRank');
+  const filterAircraft = document.getElementById('filterAircraft');
+  const filterAirport = document.getElementById('filterAirport');
   const filterSearch = document.getElementById('filterSearch');
-  filterSheet.addEventListener('change', drawLogbook);
+  const clearBtn = document.getElementById('clearFilters');
+
+  // populate dynamic filter options from current data
+  const ranks = [...new Set(DB.flights.map(f=>f.rank).filter(Boolean))];
+  filterRank.innerHTML = '<option value="all">ALL RANKS</option>' + ranks.map(r=>`<option value="${r}">${r}</option>`).join('');
+
+  const aircraftTypes = [...new Set(DB.flights.map(f=>f.aircraft).filter(Boolean))].sort();
+  filterAircraft.innerHTML = '<option value="all">ALL AIRCRAFT</option>' + aircraftTypes.map(a=>`<option value="${a}">${a}</option>`).join('');
+
+  const airports = [...new Set(DB.flights.flatMap(f=>[f.dep, f.arr]).filter(Boolean))].sort();
+  filterAirport.innerHTML = '<option value="all">ALL AIRPORTS</option>' + airports.map(a=>`<option value="${a}">${a}</option>`).join('');
+
+  [filterSheet, filterRank, filterAircraft, filterAirport].forEach(el=> el.addEventListener('change', drawLogbook));
   filterSearch.addEventListener('input', drawLogbook);
+  clearBtn.addEventListener('click', ()=>{
+    filterSheet.value = 'all'; filterRank.value = 'all'; filterAircraft.value = 'all'; filterAirport.value = 'all';
+    filterSearch.value = '';
+    drawLogbook();
+  });
   drawLogbook();
 
   function drawLogbook(){
@@ -375,6 +538,16 @@ function renderLogbook(){
     const sheet = filterSheet.value;
     if(sheet==='sva') list = list.filter(f=>f.sva);
     if(sheet==='general') list = list.filter(f=>!f.sva);
+
+    const rank = filterRank.value;
+    if(rank!=='all') list = list.filter(f=>f.rank===rank);
+
+    const aircraft = filterAircraft.value;
+    if(aircraft!=='all') list = list.filter(f=>f.aircraft===aircraft);
+
+    const airport = filterAirport.value;
+    if(airport!=='all') list = list.filter(f=>f.dep===airport || f.arr===airport);
+
     const q = filterSearch.value.toUpperCase().trim();
     if(q) list = list.filter(f=> (f.dep+f.arr+f.flightNum).toUpperCase().includes(q));
 
@@ -384,13 +557,14 @@ function renderLogbook(){
         f.date, f.dep, f.arr, f.flightNum, f.aircraft,
         fmt(f.elapsed,1), fmt(f.landingRate,0), fmt(f.landingG,2),
         f.sva ? fmt(f.tfp||0,2) : '—',
+        f.rank || '—',
         flags || '—',
         f.notes || '—',
         `<button class="icon-btn" data-id="${f.id}">DELETE</button>`
       ];
     });
     document.getElementById('logbookTable').innerHTML = tableHtml(
-      ['DATE','DEP','ARR','FLT#','A/C','ELAPSED','RATE','G','TFP','FLAGS','NOTES',''], rows
+      ['DATE','DEP','ARR','FLT#','A/C','ELAPSED','RATE','G','TFP','RANK','FLAGS','NOTES',''], rows
     );
     document.querySelectorAll('#logbookTable .icon-btn').forEach(btn=>{
       btn.addEventListener('click', ()=>{

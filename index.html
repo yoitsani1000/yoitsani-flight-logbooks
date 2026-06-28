@@ -61,8 +61,13 @@
       <canvas id="chartHours" height="200"></canvas>
     </div>
 
+    <div class="card chart-card">
+      <div class="card-head"><span class="card-label">04</span><h3>AIRCRAFT TYPES FLOWN</h3></div>
+      <canvas id="chartAircraft" height="280"></canvas>
+    </div>
+
     <div class="card">
-      <div class="card-head"><span class="card-label">04</span><h3>AIRPORTS VISITED</h3></div>
+      <div class="card-head"><span class="card-label">05</span><h3>AIRPORTS VISITED</h3></div>
       <div class="table-scroll" id="airportTable"></div>
     </div>
   </section>
@@ -85,6 +90,26 @@
     <div class="card">
       <div class="card-head"><span class="card-label">07</span><h3>SVA DESTINATIONS</h3></div>
       <div class="table-scroll" id="svaAirportTable"></div>
+    </div>
+  </section>
+</template>
+
+<template id="tpl-lock">
+  <section class="form-wrap">
+    <div class="card lock-card">
+      <div class="card-head"><span class="card-label">SEC</span><h3>ENTER ACCESS CODE</h3></div>
+      <div class="pin-dots" id="pinDots">
+        <span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span>
+      </div>
+      <p class="hint" id="lockHint">&nbsp;</p>
+      <div class="keypad" id="keypad">
+        <button data-key="1">1</button><button data-key="2">2</button><button data-key="3">3</button>
+        <button data-key="4">4</button><button data-key="5">5</button><button data-key="6">6</button>
+        <button data-key="7">7</button><button data-key="8">8</button><button data-key="9">9</button>
+        <button class="key-ghost" data-key="clear" type="button">CLEAR</button>
+        <button data-key="0">0</button>
+        <button class="key-ghost" data-key="back" type="button">&#9003;</button>
+      </div>
     </div>
   </section>
 </template>
@@ -161,14 +186,24 @@
     <div class="card">
       <div class="card-head row-between">
         <div><span class="card-label">LOG</span><h3>FLIGHT LOGBOOK</h3></div>
-        <div class="filter-row">
-          <select id="filterSheet" class="mono">
-            <option value="all">ALL FLIGHTS</option>
-            <option value="sva">SVA ONLY</option>
-            <option value="general">GENERAL ONLY</option>
-          </select>
-          <input id="filterSearch" class="mono" placeholder="SEARCH DEP/ARR/FLT#">
-        </div>
+      </div>
+      <div class="filter-row filter-row-wrap">
+        <select id="filterSheet" class="mono">
+          <option value="all">ALL FLIGHTS</option>
+          <option value="sva">SVA ONLY</option>
+          <option value="general">GENERAL ONLY</option>
+        </select>
+        <select id="filterRank" class="mono">
+          <option value="all">ALL RANKS</option>
+        </select>
+        <select id="filterAircraft" class="mono">
+          <option value="all">ALL AIRCRAFT</option>
+        </select>
+        <select id="filterAirport" class="mono">
+          <option value="all">ALL AIRPORTS</option>
+        </select>
+        <input id="filterSearch" class="mono" placeholder="SEARCH DEP/ARR/FLT#">
+        <button class="btn-ghost" id="clearFilters" type="button">CLEAR</button>
       </div>
       <div class="table-scroll tall" id="logbookTable"></div>
     </div>
