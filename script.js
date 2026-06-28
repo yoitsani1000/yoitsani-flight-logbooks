@@ -364,8 +364,10 @@ function buildAircraftChart(canvasId, list){
       plugins:{
         legend:{
           position:'bottom',
+          onClick:()=>{}, // keep the pie static — don't toggle/hide slices on click
+          onHover:(e)=>{ e.native.target.style.cursor = 'default'; },
           labels:{
-            color: getCss('--text-dim'),
+            color: getCss('--text'),
             font:{ family:'JetBrains Mono', size:11 },
             generateLabels(chart){
               return chart.data.labels.map((l,i)=>{
