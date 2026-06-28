@@ -124,6 +124,9 @@ function airportCounts(list){
   return Object.entries(counts).sort((a,b)=>b[1]-a[1]);
 }
 
+function isFlagged(f){
+  return !!(f.excludeFromAvg || (f.notes && f.notes.trim()));
+}
 function pointColor(f){
   if(f.excludeFromAvg) return getCss('--cyan');
   if(f.notes && f.notes.trim()) return getCss('--green');
@@ -199,6 +202,8 @@ function buildScatter(canvasId, list, key, unitLabel){
   if(!ctx) return;
   const points = sorted.map(f=>({x:f.date, y:f[key]}));
   const colors = sorted.map(pointColor);
+  const radii = sorted.map(f=> isFlagged(f) ? 4 : 1.5);
+  const hoverRadii = sorted.map(f=> isFlagged(f) ? 6 : 3);
   charts[canvasId] = new Chart(ctx, {
     type:'line',
     data:{ datasets:[{
@@ -206,8 +211,8 @@ function buildScatter(canvasId, list, key, unitLabel){
       borderColor: getCss('--hairline'),
       backgroundColor: colors,
       pointBackgroundColor: colors,
-      pointRadius: 4,
-      pointHoverRadius: 6,
+      pointRadius: radii,
+      pointHoverRadius: hoverRadii,
       borderWidth: 1,
       tension: 0
     }]},
