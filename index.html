@@ -46,8 +46,7 @@
       <canvas id="chartRate" height="220"></canvas>
       <div class="legend-strip">
         <span><i class="dot dot-amber"></i>NORMAL</span>
-        <span><i class="dot dot-cyan"></i>SHARED COCKPIT (EXCLUDED)</span>
-        <span><i class="dot dot-yellow"></i>WINDSHEAR</span>
+        <span><i class="dot dot-cyan"></i>EXCLUDED (PM LANDING)</span>
         <span><i class="dot dot-green"></i>NOTES ATTACHED</span>
       </div>
     </div>
@@ -105,20 +104,16 @@
       </div>
       <div class="grid-2">
         <label>DATE <input required type="date" id="f-date" class="mono"></label>
-        <label>ELAPSED (HRS) <input required type="number" step="0.1" min="0" id="f-elapsed" class="mono"></label>
+        <label>ELAPSED (HRS) <input required type="number" inputmode="decimal" step="0.1" min="0" id="f-elapsed" class="mono"></label>
       </div>
       <div class="grid-2">
-        <label>LANDING RATE (FPM) <input required type="number" step="0.1" id="f-landingrate" class="mono" placeholder="-307.6"></label>
-        <label>LANDING G <input required type="number" step="0.01" min="0" id="f-landingg" class="mono" placeholder="1.59"></label>
+        <label>LANDING RATE (FPM) <input required type="number" inputmode="decimal" step="0.1" id="f-landingrate" class="mono" placeholder="-307.6"></label>
+        <label>LANDING G <input required type="number" inputmode="decimal" step="0.01" min="0" id="f-landingg" class="mono" placeholder="1.59"></label>
       </div>
 
-      <div class="toggle-row">
-        <label class="check"><input type="checkbox" id="f-shared"> SHARED COCKPIT</label>
-        <label class="check"><input type="checkbox" id="f-windshear"> WINDSHEAR AFFECTED</label>
-      </div>
+      <label class="check"><input type="checkbox" id="f-shared"> SHARED COCKPIT</label>
 
       <div class="grid-2 shared-only hidden" id="sharedFields">
-        <label>EXCLUDE FROM AVG RATES <input type="checkbox" id="f-exclude" checked></label>
         <label>ROLE THIS LEG
           <select id="f-role" class="mono">
             <option value="">—</option>
@@ -128,6 +123,9 @@
             <option value="PM TO/PM LDG">PM TO / PM LDG</option>
           </select>
         </label>
+        <label>EXCLUDE FROM AVG RATES
+          <span class="check inline-check"><input type="checkbox" id="f-exclude"> excluded (auto-set when you landed as PM)</span>
+        </label>
       </div>
 
       <hr class="divider">
@@ -135,7 +133,7 @@
       <label class="check sva-toggle"><input type="checkbox" id="f-issva"> LOG TO SOUTHWEST VIRTUAL TRACKER</label>
 
       <div class="grid-2 sva-only hidden" id="svaFields">
-        <label>TFP (HRS) <input type="number" step="0.01" min="0" id="f-tfp" class="mono" placeholder="1.0"></label>
+        <label>TFP (HRS) <input type="number" inputmode="decimal" step="0.01" min="0" id="f-tfp" class="mono" placeholder="1.0"></label>
         <label>SENIORITY RANK
           <select id="f-rank" class="mono">
             <option value="">—</option>
@@ -207,7 +205,7 @@
 
     <div class="card">
       <div class="card-head"><span class="card-label">I/O</span><h3>IMPORT EXISTING SPREADSHEET</h3></div>
-      <p class="hint">Upload your LOGBOOK.xlsx or SVA_FLIGHT_TRACKER.xlsx to migrate existing flights. Detects DEP/ARR/FLIGHT#/DATE/ELAPSED/TFP/LANDING R/LANDING G/AIRCRAFT/NOTES/KEY columns automatically. Shared cockpit flights and windshear are auto-flagged from notes text — review after import.</p>
+      <p class="hint">Upload your LOGBOOK.xlsx or SVA_FLIGHT_TRACKER.xlsx to migrate existing flights. Detects DEP/ARR/FLIGHT#/DATE/ELAPSED/TFP/LANDING R/LANDING G/AIRCRAFT/NOTES columns automatically, and reads a RANK PROGRESS sheet (if present) to assign seniority rank correctly. Shared cockpit flights are auto-flagged from notes text — review after import.</p>
       <input type="file" id="importFile" accept=".xlsx,.xls">
       <div id="importStatus" class="hint mono"></div>
     </div>

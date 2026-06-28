@@ -22,7 +22,7 @@ function toRow(f){
     id:f.id, dep:f.dep, arr:f.arr, flight_num:f.flightNum, date:f.date,
     elapsed:f.elapsed, landing_rate:f.landingRate, landing_g:f.landingG,
     aircraft:f.aircraft, notes:f.notes, shared_cockpit:f.sharedCockpit,
-    role:f.role, exclude_from_avg:f.excludeFromAvg, windshear:f.windshear,
+    role:f.role, exclude_from_avg:f.excludeFromAvg,
     sva:f.sva, tfp:f.tfp, rank:f.rank, updated_at:new Date().toISOString()
   };
 }
@@ -31,7 +31,7 @@ function fromRow(r){
     id:r.id, dep:r.dep, arr:r.arr, flightNum:r.flight_num, date:r.date,
     elapsed:r.elapsed, landingRate:r.landing_rate, landingG:r.landing_g,
     aircraft:r.aircraft, notes:r.notes||'', sharedCockpit:r.shared_cockpit,
-    role:r.role||'', excludeFromAvg:r.exclude_from_avg, windshear:r.windshear,
+    role:r.role||'', excludeFromAvg:r.exclude_from_avg,
     sva:r.sva, tfp:r.tfp, rank:r.rank||''
   };
 }
@@ -125,7 +125,6 @@ function airportCounts(list){
 }
 
 function pointColor(f){
-  if(f.windshear) return getCss('--yellow');
   if(f.excludeFromAvg) return getCss('--cyan');
   if(f.notes && f.notes.trim()) return getCss('--green');
   return getCss('--amber');
@@ -298,7 +297,14 @@ function renderSVA(){
 function renderAddForm(){
   const sharedCb = document.getElementById('f-shared');
   const sharedFields = document.getElementById('sharedFields');
+  const roleSelect = document.getElementById('f-role');
+  const excludeCb = document.getElementById('f-exclude');
+
   sharedCb.addEventListener('change', ()=> sharedFields.classList.toggle('hidden', !sharedCb.checked));
+  roleSelect.addEventListener('change', ()=>{
+    // auto-set exclude from avg: only PM landings shouldn't count toward personal averages
+    excludeCb.checked = /PM LDG/.test(roleSelect.value);
+  });
 
   const svaCb = document.getElementById('f-issva');
   const svaFields = document.getElementById('svaFields');
@@ -328,9 +334,8 @@ function renderAddForm(){
       aircraft: document.getElementById('f-aircraft').value.toUpperCase().trim(),
       notes: document.getElementById('f-notes').value.trim(),
       sharedCockpit: shared,
-      role: shared ? document.getElementById('f-role').value : '',
-      excludeFromAvg: shared ? document.getElementById('f-exclude').checked : false,
-      windshear: document.getElementById('f-windshear').checked,
+      role: shared ? roleSelect.value : '',
+      excludeFromAvg: shared ? excludeCb.checked : false,
       sva: isSva,
       tfp: isSva ? parseFloat(document.getElementById('f-tfp').value || '0') : null,
       rank: isSva ? rank : ''
@@ -369,7 +374,7 @@ function renderLogbook(){
     if(q) list = list.filter(f=> (f.dep+f.arr+f.flightNum).toUpperCase().includes(q));
 
     const rows = list.map(f=>{
-      const flags = [f.sharedCockpit?'SHARED':'', f.windshear?'WX':'', f.sva?'SVA':''].filter(Boolean).join(' ');
+      const flags = [f.sharedCockpit?'SHARED':'', f.excludeFromAvg?'EXCL':'', f.sva?'SVA':''].filter(Boolean).join(' ');
       return [
         f.date, f.dep, f.arr, f.flightNum, f.aircraft,
         fmt(f.elapsed,1), fmt(f.landingRate,0), fmt(f.landingG,2),
@@ -463,6 +468,35 @@ function renderData(){
   });
 }
 
+function buildRankThresholds(workbook){
+  // Reads a "RANK PROGRESS" style sheet with RANKS + NEEDED LEGS columns.
+  // Returns [{rank, maxLeg}] describing the rank held for legs up to maxLeg
+  // (the rank BEFORE reaching the next threshold).
+  const sheetName = workbook.SheetNames.find(n=>/rank progress/i.test(n));
+  if(!sheetName) return null;
+  const sheet = workbook.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
+  if(!rows.length) return null;
+  const header = rows[0].map(h=>String(h).trim().toUpperCase());
+  const iRank = header.indexOf('RANKS');
+  const iLegs = header.indexOf('NEEDED LEGS');
+  if(iRank<0 || iLegs<0) return null;
+  const nextRankAt = [];
+  for(let r=1; r<rows.length; r++){
+    const row = rows[r];
+    if(!row || !row[iRank]) continue;
+    const legs = parseFloat(row[iLegs]);
+    if(!isNaN(legs)) nextRankAt.push({ rank:String(row[iRank]).trim().toUpperCase(), maxLeg:legs });
+  }
+  if(!nextRankAt.length) return null;
+  const heldRankSequence = ['NEW HIRE', ...nextRankAt.map(t=>t.rank)];
+  return nextRankAt.map((t,i)=>({ rank: heldRankSequence[i], maxLeg: t.maxLeg }));
+}
+function rankForLeg(legNumber, thresholds){
+  for(const t of thresholds){ if(legNumber <= t.maxLeg) return t.rank; }
+  return thresholds.length ? thresholds[thresholds.length-1].rank : '';
+}
+
 function handleImport(e){
   const file = e.target.files[0];
   if(!file) return;
@@ -479,23 +513,22 @@ function handleImport(e){
       const idx = (name)=> header.indexOf(name);
       const iDep=idx('DEP'), iArr=idx('ARR'), iFlt=idx('FLIGHT #'), iDate=idx('DATE'),
             iElapsed=idx('ELAPSED'), iTfp=idx('TFP'), iRate=idx('LANDING R'), iG=idx('LANDING G'),
-            iAc=idx('AIRCRAFT'), iNotes=idx('NOTES'), iKey=idx('KEY');
+            iAc=idx('AIRCRAFT'), iNotes=idx('NOTES');
       if(iDep<0 || iArr<0 || iRate<0){
         statusEl.textContent = 'COULD NOT FIND EXPECTED COLUMNS IN "' + sheetName + '". CHECK FILE FORMAT.';
         return;
       }
+      const isSvaSheet = iTfp>=0;
+      const thresholds = isSvaSheet ? buildRankThresholds(wb) : null;
+      let legNumber = 0;
       let imported = 0;
-      let currentRank = '';
       for(let r=1; r<rows.length; r++){
         const row = rows[r];
         if(!row || !row[iDep]) continue;
+        legNumber++;
         const notes = (iNotes>=0 ? String(row[iNotes]||'') : '').trim();
         const upperNotes = notes.toUpperCase();
-        const isSva = iTfp>=0;
-        if(isSva && iKey>=0){
-          const k = String(row[iKey]||'').trim().toUpperCase();
-          if(k) currentRank = k;
-        }
+        const role = (upperNotes.match(/P[FM] TO\/P[FM] LDG/)||[''])[0];
         const flight = {
           id: uid(),
           dep: String(row[iDep]||'').trim().toUpperCase(),
@@ -508,18 +541,18 @@ function handleImport(e){
           aircraft: String(row[iAc]||'').trim().toUpperCase(),
           notes: notes,
           sharedCockpit: upperNotes.includes('SHARED COCKPIT'),
-          role: (upperNotes.match(/P[FM] TO\/P[FM] LDG/)||[''])[0],
-          excludeFromAvg: upperNotes.includes('SHARED COCKPIT'),
-          windshear: upperNotes.includes('WINDSHEAR') || upperNotes.includes('WIND SHEAR'),
-          sva: isSva,
-          tfp: isSva ? (parseFloat(row[iTfp]) || 0) : null,
-          rank: isSva ? currentRank : ''
+          role,
+          excludeFromAvg: /PM LDG/.test(role),
+          sva: isSvaSheet,
+          tfp: isSvaSheet ? (parseFloat(row[iTfp]) || 0) : null,
+          rank: isSvaSheet ? (thresholds ? rankForLeg(legNumber, thresholds) : '') : ''
         };
         DB.flights.push(flight);
         imported++;
       }
       saveData();
-      statusEl.textContent = 'IMPORTED ' + imported + ' FLIGHTS FROM "' + sheetName + '". Review shared-cockpit / windshear flags in LOGBOOK tab.';
+      const rankNote = isSvaSheet ? (thresholds ? ' Rank assigned from RANK PROGRESS leg thresholds.' : ' No RANK PROGRESS sheet found — rank left blank, set manually if needed.') : '';
+      statusEl.textContent = 'IMPORTED ' + imported + ' FLIGHTS FROM "' + sheetName + '". Review shared-cockpit flags in LOGBOOK tab.' + rankNote;
     }catch(err){
       statusEl.textContent = 'IMPORT FAILED: ' + err.message;
     }
@@ -532,7 +565,7 @@ function exportJson(){
 }
 
 function exportCsv(){
-  const headers = ['date','dep','arr','flightNum','aircraft','elapsed','landingRate','landingG','sharedCockpit','excludeFromAvg','windshear','sva','tfp','rank','notes'];
+  const headers = ['date','dep','arr','flightNum','aircraft','elapsed','landingRate','landingG','sharedCockpit','excludeFromAvg','sva','tfp','rank','notes'];
   const lines = [headers.join(',')];
   DB.flights.forEach(f=>{
     lines.push(headers.map(h=>{
