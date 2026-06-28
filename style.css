@@ -121,8 +121,10 @@ main{flex:1;padding:20px;}
   display:grid;
   grid-template-columns:repeat(2,1fr);
   gap:16px;
+  width:100%;
 }
 .panel-grid.single{grid-template-columns:1fr;}
+.panel-grid > *{ min-width:0; } /* prevent grid items from growing past their track to fit wide content */
 @media (max-width:880px){
   .panel-grid{grid-template-columns:1fr;}
 }
@@ -132,6 +134,7 @@ main{flex:1;padding:20px;}
   display:grid;
   grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
   gap:10px;
+  min-width:0;
 }
 @media (max-width:480px){
   .dial-row{grid-template-columns:repeat(2,1fr);}
