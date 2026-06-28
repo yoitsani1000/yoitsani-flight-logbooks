@@ -497,6 +497,10 @@ function rankForLeg(legNumber, thresholds){
   return thresholds.length ? thresholds[thresholds.length-1].rank : '';
 }
 
+function matchKey(dep, arr, date, rate){
+  return dep+'|'+arr+'|'+date+'|'+(Math.round(rate*10)/10).toFixed(1);
+}
+
 function handleImport(e){
   const file = e.target.files[0];
   if(!file) return;
@@ -520,39 +524,79 @@ function handleImport(e){
       }
       const isSvaSheet = iTfp>=0;
       const thresholds = isSvaSheet ? buildRankThresholds(wb) : null;
+
+      // index existing flights by match key so we can merge instead of duplicate
+      const existingByKey = {};
+      DB.flights.forEach(f=>{
+        const k = matchKey(f.dep, f.arr, f.date, f.landingRate);
+        if(!existingByKey[k]) existingByKey[k] = [];
+        existingByKey[k].push(f);
+      });
+
       let legNumber = 0;
-      let imported = 0;
+      let added = 0, merged = 0, skipped = 0;
       for(let r=1; r<rows.length; r++){
         const row = rows[r];
         if(!row || !row[iDep]) continue;
         legNumber++;
+        const dep = String(row[iDep]||'').trim().toUpperCase();
+        const arr = String(row[iArr]||'').trim().toUpperCase();
+        const date = excelSerialToISO(row[iDate]);
+        const rate = parseFloat(row[iRate]) || 0;
         const notes = (iNotes>=0 ? String(row[iNotes]||'') : '').trim();
         const upperNotes = notes.toUpperCase();
         const role = (upperNotes.match(/P[FM] TO\/P[FM] LDG/)||[''])[0];
+        const tfp = isSvaSheet ? (parseFloat(row[iTfp]) || 0) : null;
+        const rank = isSvaSheet ? (thresholds ? rankForLeg(legNumber, thresholds) : '') : '';
+
+        const key = matchKey(dep, arr, date, rate);
+        const candidates = existingByKey[key];
+        const existing = candidates && candidates.find(f => isSvaSheet ? true : !f._importedThisBatch);
+
+        if(existing){
+          // merge: fill in SVA fields if this is the SVA sheet, fill in general fields if missing
+          if(isSvaSheet && !existing.sva){
+            existing.sva = true;
+            existing.tfp = tfp;
+            existing.rank = rank;
+            merged++;
+          } else if(!isSvaSheet && !existing._importedThisBatch){
+            // re-importing general sheet over an SVA-only stub, or a true duplicate re-import: just skip
+            skipped++;
+          } else {
+            skipped++;
+          }
+          existing._importedThisBatch = true;
+          continue;
+        }
+
         const flight = {
           id: uid(),
-          dep: String(row[iDep]||'').trim().toUpperCase(),
-          arr: String(row[iArr]||'').trim().toUpperCase(),
+          dep, arr,
           flightNum: String(row[iFlt]>=0 ? row[iFlt] : '').trim().toUpperCase(),
-          date: excelSerialToISO(row[iDate]),
+          date,
           elapsed: parseFloat(row[iElapsed]) || 0,
-          landingRate: parseFloat(row[iRate]) || 0,
+          landingRate: rate,
           landingG: parseFloat(row[iG]) || 0,
           aircraft: String(row[iAc]||'').trim().toUpperCase(),
-          notes: notes,
+          notes,
           sharedCockpit: upperNotes.includes('SHARED COCKPIT'),
           role,
           excludeFromAvg: /PM LDG/.test(role),
           sva: isSvaSheet,
-          tfp: isSvaSheet ? (parseFloat(row[iTfp]) || 0) : null,
-          rank: isSvaSheet ? (thresholds ? rankForLeg(legNumber, thresholds) : '') : ''
+          tfp,
+          rank,
+          _importedThisBatch: true
         };
         DB.flights.push(flight);
-        imported++;
+        if(!existingByKey[key]) existingByKey[key] = [];
+        existingByKey[key].push(flight);
+        added++;
       }
+      DB.flights.forEach(f=>{ delete f._importedThisBatch; });
       saveData();
       const rankNote = isSvaSheet ? (thresholds ? ' Rank assigned from RANK PROGRESS leg thresholds.' : ' No RANK PROGRESS sheet found — rank left blank, set manually if needed.') : '';
-      statusEl.textContent = 'IMPORTED ' + imported + ' FLIGHTS FROM "' + sheetName + '". Review shared-cockpit flags in LOGBOOK tab.' + rankNote;
+      statusEl.textContent = `IMPORTED ${added} new, merged ${merged} into existing flights, skipped ${skipped} duplicates, from "${sheetName}".` + rankNote;
     }catch(err){
       statusEl.textContent = 'IMPORT FAILED: ' + err.message;
     }
