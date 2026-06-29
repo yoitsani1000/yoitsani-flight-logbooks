@@ -23,8 +23,8 @@
 //      instead of allowing all reads/writes unconditionally. See the SQL
 //      block provided alongside this update — it's optional but recommended.
 //
-const DEFAULT_SUPABASE_URL = '';   // <-- paste your Supabase project URL here, e.g. 'https://xxxx.supabase.co'
-const DEFAULT_SUPABASE_KEY = '';   // <-- paste your anon public key here
+const DEFAULT_SUPABASE_URL = 'https://zdwmjlfkctlcjcdxwhbu.supabase.co';   // <-- paste your Supabase project URL here, e.g. 'https://xxxx.supabase.co'
+const DEFAULT_SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpkd21qbGZrY3RsY2pjZHh3aGJ1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1ODk2MzUsImV4cCI6MjA5ODE2NTYzNX0.r3R3QNYbJ5RRThraXIARtUMIwHmvXK9QjOw-6Ugi3iw';   // <-- paste your anon public key here
 const APP_SHARED_SECRET = '1725873'; // sent as a header on every request; pair with the RLS policy update to actually enforce it
 
 const CLOUD_KEY = 'flightlog_cloud_cfg';
