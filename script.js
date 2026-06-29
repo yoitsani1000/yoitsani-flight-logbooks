@@ -367,8 +367,8 @@ function buildAircraftChart(canvasId, list){
           onClick:()=>{}, // keep the pie static — don't toggle/hide slices on click
           onHover:(e)=>{ e.native.target.style.cursor = 'default'; },
           labels:{
-            color: getCss('--text'),
-            font:{ family:'JetBrains Mono', size:11 },
+            color: '#f0f3f5',
+            font:{ family:'JetBrains Mono', size:11, weight:600 },
             generateLabels(chart){
               return chart.data.labels.map((l,i)=>{
                 const pct = Math.round((values[i]/total)*100);
