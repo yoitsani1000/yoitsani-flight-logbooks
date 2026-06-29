@@ -1,11 +1,46 @@
 /* ===================== CLOUD SYNC (SUPABASE) ===================== */
+//
+// Fill these in ONCE, then redeploy, and every device will auto-connect —
+// no more typing the URL/key in on each new phone or browser.
+//
+// This is safe in the way Supabase is designed to be used: the "anon" key
+// is meant to be public/client-visible — it is NOT a secret like a service
+// role key. The real access boundary is your Row Level Security (RLS)
+// policy on the `flights` table, not whether this key is hidden.
+//
+// What hardcoding it here actually changes: right now the key only lived
+// in your own browser's local storage. Baking it into this file means it
+// ships inside script.js — so if your GitHub repo is PUBLIC, anyone could
+// find it by reading the repo or your live site's JS. If your repo is
+// private, exposure is limited to anyone who opens dev tools on your own
+// deployed site (which they could do either way, since it's still
+// client-side JS — there's no way to truly hide a credential in a static
+// site without a backend).
+//
+// Two things make this reasonably safe for a personal app like this:
+//   1. Keep your GitHub repo PRIVATE.
+//   2. Tighten your RLS policy so it requires the shared secret below,
+//      instead of allowing all reads/writes unconditionally. See the SQL
+//      block provided alongside this update — it's optional but recommended.
+//
+const DEFAULT_SUPABASE_URL = '';   // <-- paste your Supabase project URL here, e.g. 'https://xxxx.supabase.co'
+const DEFAULT_SUPABASE_KEY = '';   // <-- paste your anon public key here
+const APP_SHARED_SECRET = '1725873'; // sent as a header on every request; pair with the RLS policy update to actually enforce it
+
 const CLOUD_KEY = 'flightlog_cloud_cfg';
 let cloudCfg = JSON.parse(localStorage.getItem(CLOUD_KEY) || 'null');
+if(!cloudCfg && DEFAULT_SUPABASE_URL && DEFAULT_SUPABASE_KEY){
+  cloudCfg = { url: DEFAULT_SUPABASE_URL, key: DEFAULT_SUPABASE_KEY };
+}
 let supa = null;
 
 function initCloud(){
   if(cloudCfg && cloudCfg.url && cloudCfg.key && window.supabase){
-    try{ supa = window.supabase.createClient(cloudCfg.url, cloudCfg.key); }
+    try{
+      supa = window.supabase.createClient(cloudCfg.url, cloudCfg.key, {
+        global: { headers: { 'x-app-secret': APP_SHARED_SECRET } }
+      });
+    }
     catch(e){ supa = null; }
   }
   setLamp(supa ? 'idle' : 'offline');
@@ -602,10 +637,11 @@ function renderData(){
   const syncStatusEl = document.getElementById('syncStatus');
 
   function refreshCloudUI(){
+    const usingDefaults = !localStorage.getItem(CLOUD_KEY) && !!supa;
     if(supa){
       setup.classList.add('hidden');
       connected.classList.remove('hidden');
-      pill.textContent = 'CONNECTED';
+      pill.textContent = usingDefaults ? 'CONNECTED (BUILT-IN)' : 'CONNECTED';
       pill.className = 'sync-pill online';
     }else{
       setup.classList.remove('hidden');
@@ -823,6 +859,12 @@ function handleRestore(e){
   };
   reader.readAsText(file);
 }
+
+document.getElementById('lockBtn').addEventListener('click', ()=>{
+  sessionStorage.removeItem('flightlog_unlocked');
+  route('dashboard');
+  flashStatus('LOCKED');
+});
 
 /* ===================== INIT ===================== */
 initCloud();
