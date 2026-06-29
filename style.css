@@ -225,6 +225,32 @@ main{flex:1;padding:20px;}
   color:var(--text-dim);
 }
 .legend-strip span{display:flex;align-items:center;gap:5px;}
+
+.chart-legend{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px 16px;
+  justify-content:center;
+  margin-top:14px;
+  padding-top:12px;
+  border-top:1px solid var(--hairline);
+}
+.legend-item{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  font-family:var(--mono);
+  font-size:0.72rem;
+  color:#f0f3f5; /* explicit, high-contrast, never inherited or overridden */
+  white-space:nowrap;
+}
+.legend-swatch{
+  width:13px;
+  height:13px;
+  border-radius:2px;
+  flex-shrink:0;
+  display:inline-block;
+}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
 .dot-amber{background:var(--amber);}
 .dot-cyan{background:var(--cyan);}

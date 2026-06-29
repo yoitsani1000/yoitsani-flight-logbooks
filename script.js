@@ -362,26 +362,7 @@ function buildAircraftChart(canvasId, list){
       responsive:true,
       aspectRatio:1.1,
       plugins:{
-        legend:{
-          position:'bottom',
-          onClick:()=>{}, // keep the pie static — don't toggle/hide slices on click
-          onHover:(e)=>{ e.native.target.style.cursor = 'default'; },
-          labels:{
-            color: '#f0f3f5',
-            font:{ family:'JetBrains Mono', size:11, weight:600 },
-            generateLabels(chart){
-              return chart.data.labels.map((l,i)=>{
-                const pct = Math.round((values[i]/total)*100);
-                return {
-                  text:`${l} — ${values[i]} (${pct}%)`,
-                  fillStyle: chart.data.datasets[0].backgroundColor[i],
-                  strokeStyle: chart.data.datasets[0].backgroundColor[i],
-                  index:i
-                };
-              });
-            }
-          }
-        },
+        legend:{ display:false }, // real HTML legend rendered below instead — see renderAircraftLegend
         tooltip:{ callbacks:{
           label:(c)=> `${c.label}: ${c.parsed} flights (${Math.round((c.parsed/total)*100)}%)`
         }}
@@ -389,6 +370,20 @@ function buildAircraftChart(canvasId, list){
     },
     plugins:[sliceLabelPlugin]
   });
+
+  renderAircraftLegend(labels, values, colors, total);
+}
+
+function renderAircraftLegend(labels, values, colors, total){
+  const el = document.getElementById('aircraftLegend');
+  if(!el) return;
+  el.innerHTML = labels.map((l,i)=>{
+    const pct = Math.round((values[i]/total)*100);
+    return `<span class="legend-item">
+      <span class="legend-swatch" style="background:${colors[i]}"></span>
+      ${l} — ${values[i]} (${pct}%)
+    </span>`;
+  }).join('');
 }
 
 function tableHtml(headers, rows){
