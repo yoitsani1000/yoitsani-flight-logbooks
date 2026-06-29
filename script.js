@@ -178,9 +178,12 @@ let charts = {};
 
 tabs.forEach(t=>t.addEventListener('click', ()=>route(t.dataset.tab)));
 
-const GATED_TABS = ['add','data'];
+const OWNER_ONLY_TABS = ['add','data']; // require the owner code specifically, even for an already-unlocked viewer
 
-function isUnlocked(){ return sessionStorage.getItem('flightlog_unlocked') === 'true'; }
+const OWNER_CODE = '1725873';
+const VIEWER_CODE = '4920581'; // <-- change this to whatever you want to hand out to friends
+
+function getRole(){ return sessionStorage.getItem('flightlog_role'); } // 'owner' | 'viewer' | null
 
 function route(name){
   tabs.forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
@@ -188,9 +191,12 @@ function route(name){
   charts = {};
   view.innerHTML = '';
 
-  if(GATED_TABS.includes(name) && !isUnlocked()){
+  const role = getRole();
+  const needsOwnerUpgrade = OWNER_ONLY_TABS.includes(name) && role !== 'owner';
+
+  if(!role || needsOwnerUpgrade){
     view.appendChild(document.getElementById('tpl-lock').content.cloneNode(true));
-    renderLock(name);
+    renderLock(name, needsOwnerUpgrade && role === 'viewer');
     document.getElementById('statusLeft').textContent = 'LOCKED // ENTER CODE TO CONTINUE';
     document.getElementById('statusRight').textContent = new Date().toISOString().slice(0,10);
     return;
@@ -203,17 +209,22 @@ function route(name){
   if(name==='add') renderAddForm();
   if(name==='logbook') renderLogbook();
   if(name==='data') renderData();
-  document.getElementById('statusLeft').textContent = name.toUpperCase()+' // ' + DB.flights.length + ' FLIGHTS LOGGED';
+  const roleTag = role === 'viewer' ? ' // VIEWER' : '';
+  document.getElementById('statusLeft').textContent = name.toUpperCase()+' // ' + DB.flights.length + ' FLIGHTS LOGGED' + roleTag;
   document.getElementById('statusRight').textContent = new Date().toISOString().slice(0,10);
 }
 
-const ACCESS_CODE = '1725873';
-
-function renderLock(targetTab){
+function renderLock(targetTab, ownerUpgradeOnly){
   let buffer = '';
   const dots = document.querySelectorAll('#pinDots .pin-dot');
   const hint = document.getElementById('lockHint');
   const card = document.querySelector('.lock-card');
+  const titleEl = document.querySelector('#tpl-lock'); // not live; set heading via DOM below
+  const headingEl = document.querySelector('.lock-card .card-head h3');
+  if(headingEl) headingEl.textContent = ownerUpgradeOnly ? 'OWNER CODE REQUIRED' : 'ENTER ACCESS CODE';
+  if(ownerUpgradeOnly){
+    hint.textContent = 'This section needs the owner code, not the viewer code.';
+  }
 
   function updateDots(){
     dots.forEach((d,i)=> d.classList.toggle('filled', i < buffer.length));
@@ -246,12 +257,15 @@ function renderLock(targetTab){
         updateDots();
         return;
       }
-      if(buffer.length >= ACCESS_CODE.length) return;
+      if(buffer.length >= OWNER_CODE.length) return;
       buffer += key;
       updateDots();
-      if(buffer.length === ACCESS_CODE.length){
-        if(buffer === ACCESS_CODE){
-          sessionStorage.setItem('flightlog_unlocked', 'true');
+      if(buffer.length === OWNER_CODE.length){
+        if(buffer === OWNER_CODE){
+          sessionStorage.setItem('flightlog_role', 'owner');
+          route(targetTab);
+        } else if(!ownerUpgradeOnly && buffer === VIEWER_CODE){
+          sessionStorage.setItem('flightlog_role', 'viewer');
           route(targetTab);
         } else {
           showError();
@@ -583,6 +597,7 @@ function renderLogbook(){
     const q = filterSearch.value.toUpperCase().trim();
     if(q) list = list.filter(f=> (f.dep+f.arr+f.flightNum).toUpperCase().includes(q));
 
+    const canDelete = getRole() === 'owner';
     const rows = list.map(f=>{
       const flags = [f.sharedCockpit?'SHARED':'', f.excludeFromAvg?'EXCL':'', f.sva?'SVA':''].filter(Boolean).join(' ');
       return [
@@ -592,7 +607,7 @@ function renderLogbook(){
         f.rank || '—',
         flags || '—',
         f.notes || '—',
-        `<button class="icon-btn" data-id="${f.id}">DELETE</button>`
+        canDelete ? `<button class="icon-btn" data-id="${f.id}">DELETE</button>` : ''
       ];
     });
     document.getElementById('logbookTable').innerHTML = tableHtml(
@@ -861,11 +876,18 @@ function handleRestore(e){
 }
 
 document.getElementById('lockBtn').addEventListener('click', ()=>{
-  sessionStorage.removeItem('flightlog_unlocked');
+  sessionStorage.removeItem('flightlog_role');
   route('dashboard');
   flashStatus('LOCKED');
 });
 
 /* ===================== INIT ===================== */
+async function autoPullIfEmpty(){
+  if(DB.flights.length === 0 && supa){
+    document.getElementById('statusLeft').textContent = 'NO LOCAL DATA // PULLING FROM CLOUD...';
+    await syncNow();
+  }
+}
+
 initCloud();
-route('dashboard');
+autoPullIfEmpty().then(()=> route('dashboard'));
