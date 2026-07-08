@@ -636,6 +636,7 @@ function renderData(){
   document.getElementById('importFile').addEventListener('change', handleImport);
   document.getElementById('exportJson').addEventListener('click', exportJson);
   document.getElementById('exportCsv').addEventListener('click', exportCsv);
+  document.getElementById('exportPdf').addEventListener('click', exportPdf);
   document.getElementById('restoreFile').addEventListener('change', handleRestore);
   document.getElementById('wipeData').addEventListener('click', ()=>{
     if(confirm('This permanently erases all logged flights from this browser. Continue?')){
@@ -846,6 +847,59 @@ function exportCsv(){
     }).join(','));
   });
   download('flightlog_export.csv', lines.join('\n'), 'text/csv');
+}
+
+function exportPdf(){
+  if(!window.jspdf || !window.jspdf.jsPDF){
+    alert('PDF library failed to load — check your connection and try again.');
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation:'landscape', unit:'pt', format:'letter' });
+
+  const list = [...DB.flights].sort((a,b)=> new Date(a.date) - new Date(b.date));
+  const s = statsFor(list);
+  const svaList = list.filter(f=>f.sva);
+  const totalTFP = svaList.reduce((a,f)=>a+(f.tfp||0),0);
+
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(18);
+  doc.text('FLIGHTLOG \u2014 Personal Flight Data Recorder', 40, 36);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(9);
+  doc.setTextColor(120);
+  doc.text(`Generated ${new Date().toISOString().slice(0,10)}`, 40, 52);
+  doc.setTextColor(0);
+
+  const summaryLines = [
+    `Total Flights: ${s.flights}     Total Hours: ${s.hours?fmt(s.hours,1):'\u2014'}     Airports Visited: ${s.dests}`,
+    `Avg Landing Rate: ${s.avgRate!=null?fmt(s.avgRate,0):'\u2014'} FPM     Avg Landing G: ${s.avgG!=null?fmt(s.avgG,2):'\u2014'} G     Best: ${s.bestRate!=null?fmt(s.bestRate,0):'\u2014'} FPM     Worst: ${s.worstRate!=null?fmt(s.worstRate,0):'\u2014'} FPM`,
+    `Southwest Virtual Flights: ${svaList.length}     Total TFP: ${fmt(totalTFP,2)} HRS`
+  ];
+  doc.setFontSize(10);
+  summaryLines.forEach((line,i)=> doc.text(line, 40, 76 + i*15));
+
+  const rows = list.map(f=>[
+    f.date, f.dep, f.arr, f.flightNum, f.aircraft,
+    fmt(f.elapsed,1), fmt(f.landingRate,0), fmt(f.landingG,2),
+    f.sva ? fmt(f.tfp||0,2) : '\u2014',
+    f.rank || '\u2014',
+    [f.sharedCockpit?'SHARED':'', f.excludeFromAvg?'EXCL':''].filter(Boolean).join(' ') || '\u2014',
+    f.notes || ''
+  ]);
+
+  doc.autoTable({
+    head:[['DATE','DEP','ARR','FLT#','A/C','HRS','RATE','G','TFP','RANK','FLAGS','NOTES']],
+    body: rows,
+    startY: 76 + summaryLines.length*15 + 14,
+    styles:{ fontSize:7, cellPadding:3, font:'helvetica' },
+    headStyles:{ fillColor:[18,22,26], textColor:[255,176,0], fontStyle:'bold' },
+    alternateRowStyles:{ fillColor:[245,245,245] },
+    margin:{ left:40, right:40 },
+    columnStyles:{ 11:{ cellWidth:160 } }
+  });
+
+  doc.save('flightlog_export.pdf');
 }
 
 function download(filename, content, mime){
