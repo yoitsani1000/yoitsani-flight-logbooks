@@ -862,10 +862,10 @@ function exportPdf(){
   const svaList = list.filter(f=>f.sva);
   const totalTFP = svaList.reduce((a,f)=>a+(f.tfp||0),0);
 
-  doc.setFont('helvetica','bold');
+  doc.setFont('courier','bold');
   doc.setFontSize(18);
-  doc.text('FLIGHTLOG \u2014 Personal Flight Data Recorder', 40, 36);
-  doc.setFont('helvetica','normal');
+  doc.text('Logbook - Anurag Mallick', 40, 36);
+  doc.setFont('courier','normal');
   doc.setFontSize(9);
   doc.setTextColor(120);
   doc.text(`Generated ${new Date().toISOString().slice(0,10)}`, 40, 52);
@@ -876,6 +876,7 @@ function exportPdf(){
     `Avg Landing Rate: ${s.avgRate!=null?fmt(s.avgRate,0):'\u2014'} FPM     Avg Landing G: ${s.avgG!=null?fmt(s.avgG,2):'\u2014'} G     Best: ${s.bestRate!=null?fmt(s.bestRate,0):'\u2014'} FPM     Worst: ${s.worstRate!=null?fmt(s.worstRate,0):'\u2014'} FPM`,
     `Southwest Virtual Flights: ${svaList.length}     Total TFP: ${fmt(totalTFP,2)} HRS`
   ];
+  doc.setFont('courier','normal');
   doc.setFontSize(10);
   summaryLines.forEach((line,i)=> doc.text(line, 40, 76 + i*15));
 
@@ -892,8 +893,8 @@ function exportPdf(){
     head:[['DATE','DEP','ARR','FLT#','A/C','HRS','RATE','G','TFP','RANK','FLAGS','NOTES']],
     body: rows,
     startY: 76 + summaryLines.length*15 + 14,
-    styles:{ fontSize:7, cellPadding:3, font:'helvetica' },
-    headStyles:{ fillColor:[18,22,26], textColor:[255,176,0], fontStyle:'bold' },
+    styles:{ fontSize:7, cellPadding:3, font:'courier' },
+    headStyles:{ fillColor:[18,22,26], textColor:[255,176,0], fontStyle:'bold', font:'courier' },
     alternateRowStyles:{ fillColor:[245,245,245] },
     margin:{ left:40, right:40 },
     columnStyles:{ 11:{ cellWidth:160 } }
