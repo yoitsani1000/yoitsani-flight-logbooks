@@ -862,13 +862,16 @@ function exportPdf(){
   const svaList = list.filter(f=>f.sva);
   const totalTFP = svaList.reduce((a,f)=>a+(f.tfp||0),0);
 
+  const now = new Date();
+  const pdfTimestamp = `${formatUtcDate(now)}  ${formatUtcTime(now)} UTC`;
+
   doc.setFont('courier','bold');
   doc.setFontSize(18);
   doc.text('Logbook - Anurag Mallick', 40, 36);
   doc.setFont('courier','normal');
   doc.setFontSize(9);
   doc.setTextColor(120);
-  doc.text(`Generated ${new Date().toISOString().slice(0,10)}`, 40, 52);
+  doc.text(`Generated ${pdfTimestamp}`, 40, 52);
   doc.setTextColor(0);
 
   const summaryLines = [
@@ -935,6 +938,26 @@ document.getElementById('lockBtn').addEventListener('click', ()=>{
   route('dashboard');
   flashStatus('LOCKED');
 });
+
+const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+function formatUtcDate(d){
+  const dd = String(d.getUTCDate()).padStart(2,'0');
+  return `${DAYS[d.getUTCDay()]}, ${dd} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+}
+function formatUtcTime(d){
+  return [d.getUTCHours(),d.getUTCMinutes(),d.getUTCSeconds()].map(n=>String(n).padStart(2,'0')).join(':');
+}
+function tickClock(){
+  const now = new Date();
+  const dateEl = document.getElementById('utcDate');
+  const timeEl = document.getElementById('utcTime');
+  if(dateEl) dateEl.textContent = formatUtcDate(now);
+  if(timeEl) timeEl.textContent = formatUtcTime(now);
+}
+tickClock();
+setInterval(tickClock, 1000);
 
 /* ===================== INIT ===================== */
 async function autoPullIfEmpty(){
