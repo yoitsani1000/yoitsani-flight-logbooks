@@ -56,43 +56,54 @@ function toRow(f){
   return {
     id:f.id, dep:f.dep, arr:f.arr, flight_num:f.flightNum, date:f.date,
     elapsed:f.elapsed, landing_rate:f.landingRate, landing_g:f.landingG,
-    aircraft:f.aircraft, notes:f.notes, shared_cockpit:f.sharedCockpit,
-    role:f.role, exclude_from_avg:f.excludeFromAvg,
-    sva:f.sva, tfp:f.tfp, rank:f.rank, updated_at:new Date().toISOString()
+    aircraft:f.aircraft, notes:f.notes||'', shared_cockpit:!!f.sharedCockpit,
+    role:f.role||'', exclude_from_avg:!!f.excludeFromAvg,
+    windshear: false, // kept for schema compat — column still exists in Supabase table
+    sva:!!f.sva, tfp:f.tfp||null, rank:f.rank||'', updated_at:new Date().toISOString()
   };
 }
 function fromRow(r){
+  if(!r || !r.id) return null;
   return {
-    id:r.id, dep:r.dep, arr:r.arr, flightNum:r.flight_num, date:r.date,
-    elapsed:r.elapsed, landingRate:r.landing_rate, landingG:r.landing_g,
-    aircraft:r.aircraft, notes:r.notes||'', sharedCockpit:r.shared_cockpit,
-    role:r.role||'', excludeFromAvg:r.exclude_from_avg,
-    sva:r.sva, tfp:r.tfp, rank:r.rank||''
+    id:r.id,
+    dep:r.dep||'', arr:r.arr||'', flightNum:r.flight_num||'',
+    date: r.date ? String(r.date).slice(0,10) : '',
+    elapsed: parseFloat(r.elapsed)||0,
+    landingRate: parseFloat(r.landing_rate)||0,
+    landingG: parseFloat(r.landing_g)||0,
+    aircraft:r.aircraft||'', notes:r.notes||'',
+    sharedCockpit:!!r.shared_cockpit,
+    role:r.role||'', excludeFromAvg:!!r.exclude_from_avg,
+    sva:!!r.sva, tfp:r.tfp!=null?parseFloat(r.tfp):null, rank:r.rank||''
   };
 }
 
 async function syncNow(){
-  if(!supa) return { ok:false, msg:'Not connected.' };
+  if(!supa) return { ok:false, msg:'Not connected. Add your Supabase credentials in the Data tab.' };
   setLamp('syncing');
   try{
+    let pushed = 0;
     if(DB.flights.length){
       const rows = DB.flights.map(toRow);
       const { error: upErr } = await supa.from('flights').upsert(rows, { onConflict:'id' });
       if(upErr) throw upErr;
+      pushed = rows.length;
     }
     const { data, error: selErr } = await supa.from('flights').select('*');
     if(selErr) throw selErr;
     const localIds = new Set(DB.flights.map(f=>f.id));
     let pulled = 0;
     (data||[]).forEach(row=>{
-      if(!localIds.has(row.id)){ DB.flights.push(fromRow(row)); pulled++; }
+      const f = fromRow(row);
+      if(f && !localIds.has(f.id)){ DB.flights.push(f); pulled++; }
     });
     saveData();
     setLamp('online');
-    return { ok:true, msg:`Synced. Pushed ${DB.flights.length} local, pulled ${pulled} new from cloud.` };
+    return { ok:true, msg:`Synced. Pushed ${pushed}, pulled ${pulled===0&&pushed===0?0:pulled} new from cloud. Total: ${DB.flights.length} flights.` };
   }catch(err){
     setLamp('error');
-    return { ok:false, msg:'Sync failed: ' + (err.message||err) };
+    const msg = err.message || (typeof err === 'object' ? JSON.stringify(err) : String(err));
+    return { ok:false, msg:'Sync failed: ' + msg };
   }
 }
 
@@ -690,9 +701,16 @@ function renderData(){
 
   document.getElementById('syncNow')?.addEventListener('click', async ()=>{
     syncStatusEl.textContent = 'Syncing...';
+    syncStatusEl.className = 'hint mono';
     const res = await syncNow();
     syncStatusEl.textContent = res.msg;
-    if(res.ok) flashStatus('CLOUD SYNC COMPLETE');
+    syncStatusEl.style.color = res.ok ? '' : 'var(--red)';
+    if(res.ok){
+      flashStatus('CLOUD SYNC COMPLETE — ' + DB.flights.length + ' FLIGHTS');
+      // re-render current tab so dashboard updates if data was pulled
+      const activeTab = document.querySelector('.tab.active');
+      if(activeTab && activeTab.dataset.tab !== 'data') route(activeTab.dataset.tab);
+    }
   });
 }
 
@@ -962,10 +980,24 @@ setInterval(tickClock, 1000);
 /* ===================== INIT ===================== */
 async function autoPullIfEmpty(){
   if(DB.flights.length === 0 && supa){
-    document.getElementById('statusLeft').textContent = 'NO LOCAL DATA // PULLING FROM CLOUD...';
-    await syncNow();
+    const statusEl = document.getElementById('statusLeft');
+    if(statusEl) statusEl.textContent = 'NO LOCAL DATA // PULLING FROM CLOUD...';
+    // race the sync against a 6-second timeout so a slow/offline Supabase never freezes the page
+    const timeout = new Promise(resolve => setTimeout(()=> resolve({ok:false, msg:'Cloud timed out — load the page again when connected, or restore a JSON backup.'}), 6000));
+    const res = await Promise.race([syncNow(), timeout]);
+    if(!res.ok){
+      if(statusEl) statusEl.textContent = 'CLOUD PULL FAILED: ' + res.msg;
+    } else if(DB.flights.length > 0){
+      if(statusEl) statusEl.textContent = 'LOADED ' + DB.flights.length + ' FLIGHTS FROM CLOUD';
+    }
   }
 }
 
 initCloud();
-autoPullIfEmpty().then(()=> route('dashboard'));
+autoPullIfEmpty()
+  .catch(err => {
+    console.error('autoPullIfEmpty error:', err);
+    const statusEl = document.getElementById('statusLeft');
+    if(statusEl) statusEl.textContent = 'INIT ERROR: ' + (err.message || err);
+  })
+  .finally(() => route('dashboard'));
