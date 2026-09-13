@@ -346,6 +346,7 @@ function buildScatter(canvasId, list, key, unitLabel){
     options:{
       responsive:true,
       plugins:{ legend:{display:false}, tooltip:{ callbacks:{
+        title: (items)=> items.length ? formatUtcDate(new Date(items[0].parsed.x)).replace(/^\w+,\s*/,'') : '',
         label: (c)=> `${unitLabel}: ${c.parsed.y}`
       }}},
       scales:{
@@ -487,7 +488,10 @@ function renderSVA(){
   charts.chartTFP = new Chart(ctx, {
     type:'line',
     data:{ datasets:[{ data:points, borderColor:getCss('--cyan'), backgroundColor:getCss('--cyan-dim'), fill:true, pointRadius:2, tension:0.15 }]},
-    options:{ responsive:true, plugins:{legend:{display:false}},
+    options:{ responsive:true, plugins:{legend:{display:false}, tooltip:{ callbacks:{
+        title: (items)=> items.length ? formatUtcDate(new Date(items[0].parsed.x)).replace(/^\w+,\s*/,'') : '',
+        label: (c)=> `TFP: ${c.parsed.y}`
+      }}},
       scales:{ x:{type:'time', time:{unit:'month'}, ticks:{color:getCss('--text-dim')}, grid:{color:getCss('--hairline')}},
                y:{ ticks:{color:getCss('--text-dim')}, grid:{color:getCss('--hairline')} } } }
   });
