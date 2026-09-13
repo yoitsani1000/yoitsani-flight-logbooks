@@ -102,8 +102,7 @@ async function syncNow(){
     return { ok:true, msg:`Synced. Pushed ${pushed}, pulled ${pulled===0&&pushed===0?0:pulled} new from cloud. Total: ${DB.flights.length} flights.` };
   }catch(err){
     setLamp('error');
-    const msg = err.message || (typeof err === 'object' ? JSON.stringify(err) : String(err));
-    return { ok:false, msg:'Sync failed: ' + msg };
+    return { ok:false, msg:'Sync failed: ' + describeError(err) };
   }
 }
 
@@ -699,19 +698,39 @@ function renderData(){
     refreshCloudUI();
   });
 
-  document.getElementById('syncNow')?.addEventListener('click', async ()=>{
+  document.getElementById('syncNow')?.addEventListener('click', async (e)=>{
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    const originalLabel = btn.textContent;
+    btn.textContent = 'SYNCING...';
     syncStatusEl.textContent = 'Syncing...';
-    syncStatusEl.className = 'hint mono';
-    const res = await syncNow();
-    syncStatusEl.textContent = res.msg;
-    syncStatusEl.style.color = res.ok ? '' : 'var(--red)';
-    if(res.ok){
-      flashStatus('CLOUD SYNC COMPLETE — ' + DB.flights.length + ' FLIGHTS');
-      // re-render current tab so dashboard updates if data was pulled
-      const activeTab = document.querySelector('.tab.active');
-      if(activeTab && activeTab.dataset.tab !== 'data') route(activeTab.dataset.tab);
+    syncStatusEl.style.color = '';
+    try{
+      const res = await syncNow();
+      syncStatusEl.textContent = res.msg;
+      syncStatusEl.style.color = res.ok ? '' : 'var(--red)';
+      if(res.ok){
+        flashStatus('CLOUD SYNC COMPLETE — ' + DB.flights.length + ' FLIGHTS');
+        const activeTab = document.querySelector('.tab.active');
+        if(activeTab && activeTab.dataset.tab !== 'data') route(activeTab.dataset.tab);
+      }
+    }catch(err){
+      // catches anything syncNow's own try/catch didn't (e.g. a throw before it could build its result object)
+      console.error('Sync button error:', err);
+      syncStatusEl.textContent = 'Sync failed unexpectedly: ' + describeError(err);
+      syncStatusEl.style.color = 'var(--red)';
+    }finally{
+      btn.disabled = false;
+      btn.textContent = originalLabel;
     }
   });
+}
+
+function describeError(err){
+  if(!err) return 'Unknown error';
+  if(err.message) return err.message + (err.hint ? ' (' + err.hint + ')' : '') + (err.code ? ' [code ' + err.code + ']' : '');
+  if(err.error_description) return err.error_description;
+  try{ return JSON.stringify(err); }catch(e){ return String(err); }
 }
 
 function buildRankThresholds(workbook){
