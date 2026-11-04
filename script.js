@@ -17,15 +17,13 @@
 // client-side JS — there's no way to truly hide a credential in a static
 // site without a backend).
 //
-// Two things make this reasonably safe for a personal app like this:
-//   1. Keep your GitHub repo PRIVATE.
-//   2. Tighten your RLS policy so it requires the shared secret below,
-//      instead of allowing all reads/writes unconditionally. See the SQL
-//      block provided alongside this update — it's optional but recommended.
+// Access is enforced by Supabase Auth plus Row Level Security (see
+// supabase_auth_setup.sql). Signing in gives each person a session token;
+// the database only lets the owner write and lets any signed-in user read.
+// Nothing in this file grants access on its own.
 //
 const DEFAULT_SUPABASE_URL = 'https://zdwmjlfkctlcjcdxwhbu.supabase.co';   // <-- paste your Supabase project URL here, e.g. 'https://xxxx.supabase.co'
 const DEFAULT_SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpkd21qbGZrY3RsY2pjZHh3aGJ1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1ODk2MzUsImV4cCI6MjA5ODE2NTYzNX0.r3R3QNYbJ5RRThraXIARtUMIwHmvXK9QjOw-6Ugi3iw';   // <-- paste your anon public key here
-const APP_SHARED_SECRET = '1725873'; // sent as a header on every request; pair with the RLS policy update to actually enforce it
 
 const CLOUD_KEY = 'flightlog_cloud_cfg';
 let cloudCfg = JSON.parse(localStorage.getItem(CLOUD_KEY) || 'null');
@@ -38,7 +36,7 @@ function initCloud(){
   if(cloudCfg && cloudCfg.url && cloudCfg.key && window.supabase){
     try{
       supa = window.supabase.createClient(cloudCfg.url, cloudCfg.key, {
-        global: { headers: { 'x-app-secret': APP_SHARED_SECRET } }
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
       });
     }
     catch(e){ supa = null; }
@@ -59,7 +57,7 @@ function toRow(f){
     aircraft:f.aircraft, notes:f.notes||'', shared_cockpit:!!f.sharedCockpit,
     role:f.role||'', exclude_from_avg:!!f.excludeFromAvg,
     windshear: false, // kept for schema compat — column still exists in Supabase table
-    sva:!!f.sva, tfp:f.tfp||null, rank:f.rank||'', updated_at:new Date().toISOString()
+    sva:!!f.sva, tfp:f.tfp||null, rank:f.rank||'', updated_at:f.updatedAt || new Date().toISOString()
   };
 }
 function fromRow(r){
@@ -74,32 +72,82 @@ function fromRow(r){
     aircraft:r.aircraft||'', notes:r.notes||'',
     sharedCockpit:!!r.shared_cockpit,
     role:r.role||'', excludeFromAvg:!!r.exclude_from_avg,
-    sva:!!r.sva, tfp:r.tfp!=null?parseFloat(r.tfp):null, rank:r.rank||''
+    sva:!!r.sva, tfp:r.tfp!=null?parseFloat(r.tfp):null, rank:r.rank||'',
+    updatedAt: r.updated_at || ''
   };
 }
+
+function ts(v){ const t = Date.parse(v || ''); return isNaN(t) ? 0 : t; }
 
 async function syncNow(){
   if(!supa) return { ok:false, msg:'Not connected. Add your Supabase credentials in the Data tab.' };
   setLamp('syncing');
   try{
-    let pushed = 0;
-    if(DB.flights.length){
-      const rows = DB.flights.map(toRow);
-      const { error: upErr } = await supa.from('flights').upsert(rows, { onConflict:'id' });
-      if(upErr) throw upErr;
-      pushed = rows.length;
-    }
+    // Only the owner may write. Viewers pull and never push.
+    const isOwner = getRole() === 'owner';
+    // Order matters: read the cloud first so deletions made on other devices
+    // are applied BEFORE this device pushes, otherwise a stale device would
+    // resurrect rows that were deleted elsewhere.
     const { data, error: selErr } = await supa.from('flights').select('*');
     if(selErr) throw selErr;
-    const localIds = new Set(DB.flights.map(f=>f.id));
-    let pulled = 0;
-    (data||[]).forEach(row=>{
-      const f = fromRow(row);
-      if(f && !localIds.has(f.id)){ DB.flights.push(f); pulled++; }
+    const cloud = new Map();
+    (data||[]).forEach(r=>{ if(r && r.id) cloud.set(r.id, r); });
+
+    // 1. Apply deletions made on other devices (soft-deleted rows in the cloud).
+    const before = DB.flights.length;
+    DB.flights = DB.flights.filter(f=>{ const r = cloud.get(f.id); return !(r && r.deleted_at); });
+    const removed = before - DB.flights.length;
+
+    // 2. Push deletions made on this device.
+    const tombIds = new Set(DB.deleted.map(t=>t.id));
+    let deletedPushed = 0;
+    if(isOwner && tombIds.size){
+      const { error: delErr } = await supa.from('flights')
+        .update({ deleted_at: new Date().toISOString() })
+        .in('id', [...tombIds]);
+      if(delErr) throw delErr;
+      deletedPushed = tombIds.size;
+      DB.deleted = [];
+      saveData();
+    }
+
+    // 3. Pull new rows and newer versions of existing rows.
+    const indexById = new Map(DB.flights.map((f,i)=>[f.id,i]));
+    let pulled = 0, updated = 0;
+    cloud.forEach((r,id)=>{
+      if(r.deleted_at || tombIds.has(id)) return;
+      const remote = fromRow(r);
+      if(!remote) return;
+      if(!indexById.has(id)){
+        DB.flights.push(remote);
+        pulled++;
+      }else{
+        const i = indexById.get(id);
+        if(ts(remote.updatedAt) > ts(DB.flights[i].updatedAt)){
+          DB.flights[i] = remote;
+          updated++;
+        }
+      }
     });
+
+    // 4. Push only rows that are missing from the cloud or newer locally.
+    const toPush = !isOwner ? [] : DB.flights.filter(f=>{
+      const r = cloud.get(f.id);
+      return !r || ts(f.updatedAt) > ts(r.updated_at);
+    });
+    toPush.forEach(f=>{ if(!f.updatedAt) f.updatedAt = new Date().toISOString(); });
+    if(toPush.length){
+      const { error: upErr } = await supa.from('flights').upsert(toPush.map(toRow), { onConflict:'id' });
+      if(upErr) throw upErr;
+    }
+
     saveData();
     setLamp('online');
-    return { ok:true, msg:`Synced. Pushed ${pushed}, pulled ${pulled===0&&pushed===0?0:pulled} new from cloud. Total: ${DB.flights.length} flights.` };
+    const parts = isOwner ? [`pushed ${toPush.length}`, `pulled ${pulled} new`] : [`pulled ${pulled} new`];
+    if(updated) parts.push(`updated ${updated}`);
+    if(removed) parts.push(`removed ${removed} deleted elsewhere`);
+    if(deletedPushed) parts.push(`deleted ${deletedPushed} in cloud`);
+    return { ok:true, msg:`Synced: ${parts.join(', ')}. Total: ${DB.flights.length} flights.` };
   }catch(err){
     setLamp('error');
     return { ok:false, msg:'Sync failed: ' + describeError(err) };
@@ -109,12 +157,20 @@ async function syncNow(){
 /* ===================== STORAGE ===================== */
 const STORE_KEY = 'flightlog_data_v1';
 
+// DB shape: { flights: [...], deleted: [{id, deletedAt}] }
+// `deleted` holds local deletions not yet pushed to the cloud (tombstones).
+function normalizeDB(d){
+  if(!d || !Array.isArray(d.flights)) return { flights: [], deleted: [] };
+  if(!Array.isArray(d.deleted)) d.deleted = [];
+  return d;
+}
+
 function loadData(){
   try{
     const raw = localStorage.getItem(STORE_KEY);
-    if(raw) return JSON.parse(raw);
+    if(raw) return normalizeDB(JSON.parse(raw));
   }catch(e){}
-  return { flights: [] };
+  return normalizeDB(null);
 }
 function saveData(){ localStorage.setItem(STORE_KEY, JSON.stringify(DB)); }
 
@@ -124,6 +180,13 @@ let DB = loadData();
 const RANKS = ['NEW HIRE','IOE PILOT','JUNIOR FIRST OFFICER','FIRST OFFICER','SENIOR FIRST OFFICER'];
 
 function uid(){ return 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+
+// Escape anything user-controlled before it goes into innerHTML.
+function esc(v){
+  return String(v==null ? '' : v).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+// Mark a string as trusted markup so tableHtml() leaves it alone.
+function raw(html){ return { html }; }
 
 function fmt(n, d=1){ return (Math.round(n*Math.pow(10,d))/Math.pow(10,d)).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}); }
 
@@ -173,9 +236,9 @@ function isFlagged(f){
   return !!(f.excludeFromAvg || (f.notes && f.notes.trim()));
 }
 function pointColor(f){
-  if(f.excludeFromAvg) return getCss('--cyan');
-  if(f.notes && f.notes.trim()) return getCss('--green');
-  return getCss('--amber');
+  if(f.excludeFromAvg) return getCss('--rose');
+  if(f.notes && f.notes.trim()) return getCss('--accent');
+  return getCss('--steel');
 }
 function getCss(varName){
   return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
@@ -188,26 +251,136 @@ let charts = {};
 
 tabs.forEach(t=>t.addEventListener('click', ()=>route(t.dataset.tab)));
 
-const OWNER_ONLY_TABS = ['add','data']; // require the owner code specifically, even for an already-unlocked viewer
+const TAB_NAMES = { dashboard:'Dashboard', sva:'Southwest Virtual', add:'Log flight', logbook:'Logbook', data:'Data' };
+const OWNER_ONLY_TABS = ['add','data'];
 
-const OWNER_CODE = '1725873';
-const VIEWER_CODE = '4920581'; // <-- change this to whatever you want to hand out to friends
+/* ===================== AUTH =====================
+   Supabase Auth (email and password) is the real gate. The owner account is
+   marked with app_metadata.role = 'owner' (set once in SQL, and users cannot
+   edit it). Any other signed-in account is a viewer: read-only.
+   The last known identity is cached so the app still opens offline; that cache
+   only controls what the screen shows. The database enforces the real rules. */
+const AUTH_CACHE_KEY = 'flightlog_auth_cache';
+let authState = null; // { email, role: 'owner' | 'viewer', offline } or null when signed out
 
-function getRole(){ return sessionStorage.getItem('flightlog_role'); } // 'owner' | 'viewer' | null
+function getRole(){ return authState ? authState.role : null; }
+
+function roleFromUser(user){
+  return user && user.app_metadata && user.app_metadata.role === 'owner' ? 'owner' : 'viewer';
+}
+function readAuthCache(){
+  try{
+    const c = JSON.parse(localStorage.getItem(AUTH_CACHE_KEY) || 'null');
+    return c && (c.role === 'owner' || c.role === 'viewer') ? c : null;
+  }catch(e){ return null; }
+}
+function writeAuthCache(state){
+  try{
+    if(state) localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify({ email: state.email, role: state.role }));
+    else localStorage.removeItem(AUTH_CACHE_KEY);
+  }catch(e){}
+}
+function applyAuth(state){
+  authState = state;
+  document.body.dataset.auth = state ? state.role : 'out';
+  const btn = document.getElementById('lockBtn');
+  if(btn && state){
+    const who = state.email ? 'Signed in as ' + state.email + '. ' : '';
+    btn.title = who + 'Sign out';
+  }
+}
+function isOfflineError(e){
+  return !!e && (e.name === 'AuthRetryableFetchError' || /fetch|network|timed? ?out|offline/i.test(e.message || ''));
+}
+
+async function initAuth(){
+  const cached = readAuthCache();
+  const offlineState = cached ? { ...cached, offline: true } : null;
+  if(!supa){ applyAuth(offlineState); return; }
+  if(!initAuth._listening){
+    initAuth._listening = true;
+    // runs when the session ends (sign out, or the refresh token was rejected)
+    supa.auth.onAuthStateChange(event=>{
+      if(event === 'SIGNED_OUT' && authState && !authState.offline){
+        writeAuthCache(null);
+        applyAuth(null);
+        route('dashboard');
+      }
+    });
+  }
+  try{
+    const r = await Promise.race([
+      supa.auth.getSession(),
+      new Promise(resolve=> setTimeout(()=> resolve({ timedOut:true }), 4000))
+    ]);
+    if(r.timedOut || (r.error && isOfflineError(r.error))){ applyAuth(offlineState); return; }
+    const session = r.data && r.data.session;
+    if(session){
+      const state = { email: session.user.email, role: roleFromUser(session.user), offline:false };
+      writeAuthCache(state);
+      applyAuth(state);
+    }else{
+      writeAuthCache(null);
+      applyAuth(null);
+    }
+  }catch(e){
+    applyAuth(isOfflineError(e) ? offlineState : null);
+  }
+}
+
+async function signIn(email, password){
+  if(!supa) return { ok:false, msg:'Sign-in needs the cloud library, which did not load. Check that the vendor folder was uploaded with the site.' };
+  try{
+    const { data, error } = await supa.auth.signInWithPassword({ email, password });
+    if(error){
+      if(isOfflineError(error)) return { ok:false, msg:'Cannot reach the server. Check your connection and try again.' };
+      if(/invalid login/i.test(error.message || '')) return { ok:false, msg:'That email and password do not match.' };
+      return { ok:false, msg: error.message || 'Sign-in failed.' };
+    }
+    const state = { email: data.user.email, role: roleFromUser(data.user), offline:false };
+    writeAuthCache(state);
+    applyAuth(state);
+    return { ok:true };
+  }catch(e){
+    return { ok:false, msg: isOfflineError(e) ? 'Cannot reach the server. Check your connection and try again.' : describeError(e) };
+  }
+}
+
+function clearStoredSession(){
+  // supabase-js keeps its session under sb-<project>-auth-token
+  try{
+    Object.keys(localStorage).filter(k=> /^sb-.*-auth-token/.test(k)).forEach(k=> localStorage.removeItem(k));
+  }catch(e){}
+}
+
+async function signOut(){
+  try{
+    if(supa){
+      const { error } = await supa.auth.signOut();
+      if(error) clearStoredSession(); // e.g. offline: the server call failed, so clear it here
+    }else{
+      clearStoredSession();
+    }
+  }catch(e){ clearStoredSession(); }
+  writeAuthCache(null);
+  applyAuth(null);
+  route('dashboard');
+  flashStatus('Signed out');
+}
 
 function route(name){
+  const role = getRole();
+  if(role && OWNER_ONLY_TABS.includes(name) && role !== 'owner') name = 'dashboard';
+
   tabs.forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
   Object.values(charts).forEach(c=>c && c.destroy());
   charts = {};
   view.innerHTML = '';
 
-  const role = getRole();
-  const needsOwnerUpgrade = OWNER_ONLY_TABS.includes(name) && role !== 'owner';
-
-  if(!role || needsOwnerUpgrade){
-    view.appendChild(document.getElementById('tpl-lock').content.cloneNode(true));
-    renderLock(name, needsOwnerUpgrade && role === 'viewer');
-    document.getElementById('statusLeft').textContent = 'LOCKED // ENTER CODE TO CONTINUE';
+  if(!role){
+    view.appendChild(document.getElementById('tpl-signin').content.cloneNode(true));
+    renderSignIn();
+    document.getElementById('statusLeft').textContent = 'Signed out';
     document.getElementById('statusRight').textContent = new Date().toISOString().slice(0,10);
     return;
   }
@@ -219,218 +392,316 @@ function route(name){
   if(name==='add') renderAddForm();
   if(name==='logbook') renderLogbook();
   if(name==='data') renderData();
-  const roleTag = role === 'viewer' ? ' // VIEWER' : '';
-  document.getElementById('statusLeft').textContent = name.toUpperCase()+' // ' + DB.flights.length + ' FLIGHTS LOGGED' + roleTag;
+  const roleTag = role === 'viewer' ? ' (view only)' : (authState.offline ? ' (offline)' : '');
+  document.getElementById('statusLeft').textContent = TAB_NAMES[name] + ': ' + DB.flights.length + ' flights logged' + roleTag;
   document.getElementById('statusRight').textContent = new Date().toISOString().slice(0,10);
 }
 
-function renderLock(targetTab, ownerUpgradeOnly){
-  let buffer = '';
-  const dots = document.querySelectorAll('#pinDots .pin-dot');
-  const hint = document.getElementById('lockHint');
-  const card = document.querySelector('.lock-card');
-  const titleEl = document.querySelector('#tpl-lock'); // not live; set heading via DOM below
-  const headingEl = document.querySelector('.lock-card .card-head h3');
-  if(headingEl) headingEl.textContent = ownerUpgradeOnly ? 'OWNER CODE REQUIRED' : 'ENTER ACCESS CODE';
-  if(ownerUpgradeOnly){
-    hint.textContent = 'This section needs the owner code, not the viewer code.';
-  }
+function renderSignIn(){
+  const form = document.getElementById('signinForm');
+  const email = document.getElementById('si-email');
+  const pass = document.getElementById('si-pass');
+  const msg = document.getElementById('signinMsg');
+  const btn = document.getElementById('signinBtn');
+  const card = form.closest('.signin-card') || form;
 
-  function updateDots(){
-    dots.forEach((d,i)=> d.classList.toggle('filled', i < buffer.length));
-  }
-  function showError(){
-    hint.textContent = 'INCORRECT CODE';
-    hint.classList.add('error-text');
-    card.classList.add('shake');
-    setTimeout(()=>{
-      card.classList.remove('shake');
-      buffer = '';
-      updateDots();
-    }, 400);
-  }
-
-  document.querySelectorAll('#keypad button').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      const key = btn.dataset.key;
-      if(key === 'clear'){
-        buffer = '';
-        hint.textContent = '\u00a0';
-        hint.classList.remove('error-text');
-        updateDots();
-        return;
-      }
-      if(key === 'back'){
-        buffer = buffer.slice(0, -1);
-        hint.textContent = '\u00a0';
-        hint.classList.remove('error-text');
-        updateDots();
-        return;
-      }
-      if(buffer.length >= OWNER_CODE.length) return;
-      buffer += key;
-      updateDots();
-      if(buffer.length === OWNER_CODE.length){
-        if(buffer === OWNER_CODE){
-          sessionStorage.setItem('flightlog_role', 'owner');
-          route(targetTab);
-        } else if(!ownerUpgradeOnly && buffer === VIEWER_CODE){
-          sessionStorage.setItem('flightlog_role', 'viewer');
-          route(targetTab);
-        } else {
-          showError();
-        }
-      }
-    });
+  form.addEventListener('submit', async e=>{
+    e.preventDefault();
+    msg.textContent = '';
+    msg.classList.remove('error-text');
+    if(!email.value.trim() || !pass.value){
+      msg.textContent = 'Enter your email and password.';
+      msg.classList.add('error-text');
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Signing in...';
+    const res = await signIn(email.value.trim(), pass.value);
+    if(!res.ok){
+      btn.disabled = false;
+      btn.textContent = 'Sign in';
+      msg.textContent = res.msg;
+      msg.classList.add('error-text');
+      card.classList.add('shake');
+      setTimeout(()=> card.classList.remove('shake'), 400);
+      pass.value = '';
+      pass.focus();
+      return;
+    }
+    await pullAfterSignIn();
+    route('dashboard');
   });
+  email.focus();
 }
 
-/* ===================== DIAL CARD BUILDER ===================== */
-function dial(label, value, unit='', cls=''){
-  return `<div class="dial ${cls}"><span class="dial-label">${label}</span><div class="dial-value">${value}<span class="unit">${unit}</span></div></div>`;
+/* ===================== RENDER HELPERS ===================== */
+const MON3 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const RANK_LABELS = {
+  'NEW HIRE':'New hire',
+  'IOE PILOT':'IOE pilot',
+  'JUNIOR FIRST OFFICER':'Junior first officer',
+  'FIRST OFFICER':'First officer',
+  'SENIOR FIRST OFFICER':'Senior first officer'
+};
+function rankLabel(r){ return RANK_LABELS[r] || r || ''; }
+
+// "2026-03-07" -> "07 Mar 2026" without any timezone conversion
+function prettyDate(iso){
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  return m ? `${m[3]} ${MON3[+m[2]-1]} ${m[1]}` : (iso || '');
 }
 
-/* ===================== DASHBOARD ===================== */
-function renderDashboard(){
-  const list = generalFlights();
-  const s = statsFor(list);
-  document.getElementById('dash-dials').innerHTML = [
-    dial('TOTAL HOURS', s.hours?fmt(s.hours,1):'—','HRS'),
-    dial('TOTAL FLIGHTS', s.flights||0),
-    dial('AVG LANDING RATE', s.avgRate!=null?fmt(s.avgRate,0):'—','FPM'),
-    dial('AVG LANDING G', s.avgG!=null?fmt(s.avgG,2):'—','G'),
-    dial('BEST LANDING', s.bestRate!=null?fmt(s.bestRate,0):'—','FPM','good'),
-    dial('WORST LANDING', s.worstRate!=null?fmt(s.worstRate,0):'—','FPM','bad'),
-    dial('HIGHEST G', s.highG!=null?fmt(s.highG,2):'—','G','warn'),
-    dial('LOWEST G', s.lowG!=null?fmt(s.lowG,2):'—','G','good'),
-    dial('AIRPORTS VISITED', s.dests||0),
-    dial('LONGEST LEG', s.longest?fmt(s.longest,1):'—','HRS'),
-    dial('SHORTEST LEG', s.shortest?fmt(s.shortest,1):'—','HRS'),
+function fact(label, value, unit='', cls=''){
+  return `<div class="fact ${cls}"><dt>${esc(label)}</dt><dd>${value}${unit ? `<small>${esc(unit)}</small>` : ''}</dd></div>`;
+}
+
+// Total time as a mechanical Hobbs meter: four white-on-black wheels, then a tenths wheel.
+function renderHobbs(elId, hours){
+  const el = document.getElementById(elId);
+  if(!el) return;
+  const [whole, tenth] = (hours || 0).toFixed(1).split('.');
+  el.setAttribute('aria-label', `${fmt(hours || 0, 1)} hours`);
+  el.innerHTML = whole.padStart(4, '0').split('').map(d=>`<span class="wheel">${d}</span>`).join('')
+    + '<span class="hobbs-point"></span>'
+    + `<span class="wheel tenth">${tenth}</span>`;
+}
+
+function landingFacts(s){
+  return [
+    fact('Average rate', s.avgRate!=null ? fmt(s.avgRate,0) : '—', 'fpm'),
+    fact('Average G',    s.avgG!=null ? fmt(s.avgG,2) : '—', 'g'),
+    fact('Best landing', s.bestRate!=null ? fmt(s.bestRate,0) : '—', 'fpm', 'good'),
+    fact('Worst landing',s.worstRate!=null ? fmt(s.worstRate,0) : '—', 'fpm', 'bad'),
+    fact('Highest G',    s.highG!=null ? fmt(s.highG,2) : '—', 'g', 'warn'),
+    fact('Lowest G',     s.lowG!=null ? fmt(s.lowG,2) : '—', 'g', 'good')
   ].join('');
+}
 
-  buildScatter('chartRate', list, 'landingRate', 'FPM');
-  buildScatter('chartG', list, 'landingG', 'G');
-  buildHoursBar('chartHours', list);
-  buildAircraftChart('chartAircraft', list);
+// Airport bars: top N, expandable.
+function renderAirportBars(id, rows, limit){
+  const el = document.getElementById(id);
+  if(!el) return;
+  if(!rows.length){ el.innerHTML = '<p class="empty">No flights logged yet.</p>'; return; }
+  const max = rows[0][1];
+  let shown = limit;
+  function draw(){
+    const bars = rows.slice(0, shown).map(([code, n])=>
+      `<li><span class="bar-label">${esc(code)}</span><span class="bar-track"><span class="bar-fill" style="width:${Math.max(4, Math.round(n/max*100))}%"></span></span><span class="bar-count">${n}</span></li>`
+    ).join('');
+    let btn = '';
+    if(rows.length > limit){
+      btn = `<button class="link-btn" type="button">${shown < rows.length ? `Show all ${rows.length} airports` : 'Show fewer'}</button>`;
+    }
+    el.innerHTML = `<ul class="bars">${bars}</ul>${btn}`;
+    const b = el.querySelector('.link-btn');
+    if(b) b.addEventListener('click', ()=>{ shown = shown < rows.length ? rows.length : limit; draw(); });
+  }
+  draw();
+}
 
-  const rows = airportCounts(list);
-  document.getElementById('airportTable').innerHTML = tableHtml(
-    ['AIRPORT','VISITS'], rows.map(r=>[r[0], r[1]])
-  );
+/* ---------- landing quality ----------
+   One scale used everywhere: the spread bar, the rate chart's shaded zone
+   and the colour of each rate in the logbook. */
+const SPREAD = [
+  { k:'smooth', label:'Smooth', note:'under 150 fpm', test:a=> a<=150 },
+  { k:'normal', label:'Normal', note:'150 to 350 fpm', test:a=> a>150 && a<=350 },
+  { k:'firm',   label:'Firm',   note:'350 to 500 fpm', test:a=> a>350 && a<=500 },
+  { k:'hard',   label:'Hard',   note:'over 500 fpm',   test:a=> a>500 }
+];
+function rateClass(rate){
+  const a = Math.abs(rate);
+  if(isNaN(a)) return '';
+  if(a <= 150) return 'r-smooth';
+  if(a > 500) return 'r-hard';
+  if(a > 350) return 'r-firm';
+  return '';
+}
+
+function renderSpread(id, list){
+  const el = document.getElementById(id);
+  if(!el) return;
+  const rows = list.filter(f=> !f.excludeFromAvg && isFinite(f.landingRate));
+  if(!rows.length){ el.innerHTML = ''; return; }
+  const counts = SPREAD.map(b=> rows.filter(f=> b.test(Math.abs(f.landingRate))).length);
+  const total = rows.length;
+  const pct = n => Math.round(n/total*100);
+  const summary = SPREAD.map((b,i)=> `${counts[i]} ${b.label.toLowerCase()}`).join(', ');
+  el.innerHTML =
+    `<div class="spread-bar" role="img" aria-label="Landing quality of ${total} landings: ${summary}">`
+      + SPREAD.map((b,i)=> counts[i] ? `<span class="seg seg-${b.k}" style="flex-grow:${counts[i]}"></span>` : '').join('')
+    + '</div>'
+    + '<ul class="spread-key">'
+      + SPREAD.map((b,i)=>
+          `<li><i class="sw sw-${b.k}"></i><span class="sk-name">${b.label}</span><b>${pct(counts[i])}%</b><small>${esc(b.note)}, ${counts[i]} landing${counts[i]===1?'':'s'}</small></li>`
+        ).join('')
+    + '</ul>';
+}
+
+function tableHtml(headers, rows){
+  if(!rows.length) return '<p class="empty">No data yet.</p>';
+  const cell = c => (c && typeof c === 'object' && 'html' in c) ? c.html : esc(c);
+  return `<table><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${
+    rows.map(r=>`<tr>${r.map(c=>`<td>${cell(c)}</td>`).join('')}</tr>`).join('')
+  }</tbody></table>`;
+}
+
+/* ---------- charts ---------- */
+function palette(){
+  return {
+    line:getCss('--line'), dim:getCss('--dim'), text:getCss('--text'), bg:getCss('--bg'),
+    surface:getCss('--surface'), raised:getCss('--raised'),
+    accent:getCss('--accent'), steel:getCss('--steel'), sky:getCss('--sky'),
+    mint:getCss('--mint'), rose:getCss('--rose'), violet:getCss('--violet')
+  };
+}
+
+// Returns false (and explains why in the page) when the Chart.js file did not load.
+function chartsReady(canvasId){
+  if(window.Chart){
+    const P = palette();
+    Chart.defaults.font.family = getCss('--sans');
+    Chart.defaults.font.size = 12;
+    Chart.defaults.color = P.dim;
+    Chart.defaults.borderColor = P.line;
+    return true;
+  }
+  const c = document.getElementById(canvasId);
+  const box = c && c.parentElement;
+  if(box && !box.dataset.failed){
+    box.dataset.failed = '1';
+    box.innerHTML = '<p class="empty">Charts could not load. Make sure the vendor folder was uploaded with the site.</p>';
+  }
+  return false;
+}
+
+function tooltipBase(P){
+  return { backgroundColor:P.raised, titleColor:P.text, bodyColor:P.text, borderColor:P.line, borderWidth:1, padding:10, displayColors:false, cornerRadius:6 };
+}
+function dateTitle(items){
+  return items.length ? formatUtcDate(new Date(items[0].parsed.x)).replace(/^\w+,\s*/,'') : '';
 }
 
 function sortedByDate(list){
-  return [...list].sort((a,b)=> new Date(a.date) - new Date(b.date));
+  return [...list].sort((a,b)=> (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
 function buildScatter(canvasId, list, key, unitLabel){
-  const sorted = sortedByDate(list);
   const ctx = document.getElementById(canvasId);
-  if(!ctx) return;
+  if(!ctx || !chartsReady(canvasId)) return;
+  const P = palette();
+  const sorted = sortedByDate(list);
   const points = sorted.map(f=>({x:f.date, y:f[key]}));
   const colors = sorted.map(pointColor);
-  const radii = sorted.map(f=> isFlagged(f) ? 4 : 1.5);
-  const hoverRadii = sorted.map(f=> isFlagged(f) ? 6 : 3);
+  // shade the smooth zone (0 to -150 fpm) on the landing-rate chart
+  const smoothZone = {
+    id:'smoothZone',
+    beforeDatasetsDraw(chart){
+      if(key !== 'landingRate') return;
+      const { ctx:c, chartArea:a, scales:{y} } = chart;
+      const top = Math.max(y.getPixelForValue(0), a.top);
+      const bottom = Math.min(y.getPixelForValue(-150), a.bottom);
+      if(bottom <= top) return;
+      c.save();
+      c.fillStyle = P.mint + '1c';
+      c.fillRect(a.left, top, a.width, bottom - top);
+      c.restore();
+    }
+  };
   charts[canvasId] = new Chart(ctx, {
     type:'line',
+    plugins:[smoothZone],
     data:{ datasets:[{
       data: points,
-      borderColor: getCss('--hairline'),
+      borderColor: P.steel + '66',
       backgroundColor: colors,
       pointBackgroundColor: colors,
-      pointRadius: radii,
-      pointHoverRadius: hoverRadii,
-      borderWidth: 1,
+      pointBorderWidth: 0,
+      pointRadius: sorted.map(f=> isFlagged(f) ? 4 : 1.5),
+      pointHoverRadius: sorted.map(f=> isFlagged(f) ? 6 : 3.5),
+      borderWidth: 1.25,
       tension: 0
     }]},
     options:{
-      responsive:true,
-      plugins:{ legend:{display:false}, tooltip:{ callbacks:{
-        title: (items)=> items.length ? formatUtcDate(new Date(items[0].parsed.x)).replace(/^\w+,\s*/,'') : '',
-        label: (c)=> `${unitLabel}: ${c.parsed.y}`
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ ...tooltipBase(P), callbacks:{
+        title: dateTitle,
+        label: (c)=> `${c.parsed.y} ${unitLabel}`
       }}},
       scales:{
-        x:{ type:'time', time:{unit:'month'}, ticks:{color:getCss('--text-dim')}, grid:{color:getCss('--hairline')} },
-        y:{ ticks:{color:getCss('--text-dim')}, grid:{color:getCss('--hairline')} }
+        x:{ type:'time', time:{unit:'month'}, ticks:{maxTicksLimit:6, maxRotation:0}, grid:{display:false}, border:{color:P.line} },
+        y:{ grid:{color:P.line}, border:{display:false}, ticks:{maxTicksLimit:6} }
       }
     }
   });
 }
 
 function buildHoursBar(canvasId, list){
+  const ctx = document.getElementById(canvasId);
+  if(!ctx || !chartsReady(canvasId)) return;
+  const P = palette();
   const map = {};
   list.forEach(f=>{
     const ym = (f.date||'').slice(0,7);
-    if(!ym) return;
-    map[ym] = (map[ym]||0) + f.elapsed;
+    if(ym) map[ym] = (map[ym]||0) + f.elapsed;
   });
   const keys = Object.keys(map).sort();
-  const ctx = document.getElementById(canvasId);
   charts[canvasId] = new Chart(ctx, {
     type:'bar',
-    data:{ labels:keys, datasets:[{ data:keys.map(k=>+map[k].toFixed(1)), backgroundColor: getCss('--amber-dim'), borderColor: getCss('--amber'), borderWidth:1 }]},
-    options:{ responsive:true, plugins:{legend:{display:false}},
-      scales:{ x:{ticks:{color:getCss('--text-dim')},grid:{display:false}}, y:{ticks:{color:getCss('--text-dim')},grid:{color:getCss('--hairline')}} } }
+    data:{ labels:keys.map(k=>`${MON3[+k.slice(5,7)-1]} ${k.slice(0,4)}`),
+           datasets:[{ data:keys.map(k=>+map[k].toFixed(1)), backgroundColor:P.steel, hoverBackgroundColor:P.accent, borderRadius:2, maxBarThickness:28 }]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ ...tooltipBase(P), callbacks:{ label:(c)=> `${c.parsed.y} hours` } } },
+      scales:{ x:{ grid:{display:false}, border:{color:P.line}, ticks:{maxTicksLimit:8, maxRotation:0} },
+               y:{ grid:{color:P.line}, border:{display:false}, ticks:{maxTicksLimit:5} } } }
   });
 }
 
 function buildAircraftChart(canvasId, list){
   const ctx = document.getElementById(canvasId);
-  if(!ctx) return;
+  if(!ctx || !chartsReady(canvasId)) return;
+  const P = palette();
   const counts = {};
-  list.forEach(f=>{ const ac = f.aircraft || 'UNKNOWN'; counts[ac] = (counts[ac]||0)+1; });
+  list.forEach(f=>{ const ac = f.aircraft || 'Unknown'; counts[ac] = (counts[ac]||0)+1; });
   const entries = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
   const total = list.length || 1;
   const labels = entries.map(e=>e[0]);
   const values = entries.map(e=>e[1]);
 
-  const basePalette = ['--amber','--cyan','--green','--red','--amber-dim','--cyan-dim'];
-  const colors = labels.map((_,i)=>{
-    if(i < basePalette.length) return getCss(basePalette[i]);
-    // generate extra distinct hues for overflow beyond base palette
-    const hue = (i * 47) % 360;
-    return `hsl(${hue}, 55%, 55%)`;
-  });
+  const base = [P.accent, P.sky, P.steel, P.mint, P.rose, P.violet];
+  const colors = labels.map((_,i)=> i < base.length ? base[i] : `hsl(${(i*47)%360}, 45%, 60%)`);
 
   const sliceLabelPlugin = {
     id:'sliceLabel',
     afterDatasetsDraw(chart){
       const c = chart.ctx;
-      const meta = chart.getDatasetMeta(0);
       c.save();
-      c.font = '600 11px JetBrains Mono, monospace';
+      c.font = `600 12px ${getCss('--cond')}`;
       c.textAlign = 'center';
       c.textBaseline = 'middle';
-      meta.data.forEach((arc, i)=>{
+      c.fillStyle = P.bg;
+      chart.getDatasetMeta(0).data.forEach((arc, i)=>{
         const pct = Math.round((values[i]/total)*100);
-        if(pct < 4) return; // skip labels for slivers, legend still shows them
+        if(pct < 6) return;
         const angle = (arc.startAngle + arc.endAngle) / 2;
         const radius = (arc.innerRadius + arc.outerRadius) / 2;
-        const x = arc.x + Math.cos(angle) * radius;
-        const y = arc.y + Math.sin(angle) * radius;
-        c.fillStyle = '#10130f';
-        c.fillText(`${pct}%`, x, y);
+        c.fillText(`${pct}%`, arc.x + Math.cos(angle)*radius, arc.y + Math.sin(angle)*radius);
       });
       c.restore();
     }
   };
 
   charts[canvasId] = new Chart(ctx, {
-    type:'pie',
-    data:{ labels, datasets:[{ data: values, backgroundColor: colors, borderColor: getCss('--bg'), borderWidth:2 }]},
+    type:'doughnut',
+    data:{ labels, datasets:[{ data:values, backgroundColor:colors, borderColor:P.surface, borderWidth:2, hoverOffset:0 }]},
     options:{
-      responsive:true,
-      aspectRatio:1.1,
-      plugins:{
-        legend:{ display:false }, // real HTML legend rendered below instead — see renderAircraftLegend
-        tooltip:{ callbacks:{
-          label:(c)=> `${c.label}: ${c.parsed} flights (${Math.round((c.parsed/total)*100)}%)`
-        }}
-      }
+      responsive:true, aspectRatio:1, cutout:'48%',
+      events:['mousemove','mouseout','click','touchstart','touchmove'],
+      plugins:{ legend:{display:false}, tooltip:{ ...tooltipBase(P), callbacks:{
+        label:(c)=> `${c.label}: ${c.parsed} flights (${Math.round((c.parsed/total)*100)}%)`
+      }}}
     },
     plugins:[sliceLabelPlugin]
   });
-
   renderAircraftLegend(labels, values, colors, total);
 }
 
@@ -439,18 +710,30 @@ function renderAircraftLegend(labels, values, colors, total){
   if(!el) return;
   el.innerHTML = labels.map((l,i)=>{
     const pct = Math.round((values[i]/total)*100);
-    return `<span class="legend-item">
-      <span class="legend-swatch" style="background:${colors[i]}"></span>
-      ${l} — ${values[i]} (${pct}%)
-    </span>`;
+    return `<li class="legend-item"><span class="legend-swatch" style="background:${colors[i]}"></span><span>${esc(l)}</span><span class="legend-count">${values[i]} (${pct}%)</span></li>`;
   }).join('');
 }
 
-function tableHtml(headers, rows){
-  if(!rows.length) return '<p class="hint">NO DATA YET</p>';
-  return `<table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${
-    rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')
-  }</tbody></table>`;
+/* ===================== DASHBOARD ===================== */
+function renderDashboard(){
+  const list = generalFlights();
+  const s = statsFor(list);
+
+  renderHobbs('dash-hobbs', s.hours);
+  document.getElementById('dash-facts').innerHTML = [
+    fact('Flights', s.flights || 0),
+    fact('Airports', s.dests || 0),
+    fact('Longest leg', s.longest ? fmt(s.longest,1) : '—', 'hrs'),
+    fact('Shortest leg', s.shortest ? fmt(s.shortest,1) : '—', 'hrs')
+  ].join('');
+  renderSpread('dash-spread', list);
+  document.getElementById('dash-ledger').innerHTML = landingFacts(s);
+
+  buildScatter('chartRate', list, 'landingRate', 'fpm');
+  buildScatter('chartG', list, 'landingG', 'g');
+  buildHoursBar('chartHours', list);
+  buildAircraftChart('chartAircraft', list);
+  renderAirportBars('airportTable', airportCounts(list), 8);
 }
 
 /* ===================== SVA DASHBOARD ===================== */
@@ -459,46 +742,43 @@ function renderSVA(){
   const s = statsFor(list);
   const totalTFP = list.reduce((a,f)=>a+(f.tfp||0),0);
 
-  document.getElementById('sva-dials').innerHTML = [
-    dial('TOTAL HOURS', s.hours?fmt(s.hours,1):'—','HRS'),
-    dial('TOTAL FLIGHTS', s.flights||0),
-    dial('TOTAL TFP', totalTFP?fmt(totalTFP,2):'—','HRS'),
-    dial('AVG LANDING RATE', s.avgRate!=null?fmt(s.avgRate,0):'—','FPM'),
-    dial('AVG LANDING G', s.avgG!=null?fmt(s.avgG,2):'—','G'),
-    dial('BEST LANDING', s.bestRate!=null?fmt(s.bestRate,0):'—','FPM','good'),
-    dial('WORST LANDING', s.worstRate!=null?fmt(s.worstRate,0):'—','FPM','bad'),
-    dial('AIRPORTS VISITED', s.dests||0),
+  renderHobbs('sva-hobbs', s.hours);
+  document.getElementById('sva-facts').innerHTML = [
+    fact('Flights', s.flights || 0),
+    fact('TFP total', totalTFP ? fmt(totalTFP,2) : '—', 'hrs'),
+    fact('Airports', s.dests || 0),
+    fact('Longest leg', s.longest ? fmt(s.longest,1) : '—', 'hrs')
   ].join('');
+  renderSpread('sva-spread', list);
+  document.getElementById('sva-ledger').innerHTML = landingFacts(s);
 
   const rankRows = RANKS.map(r=>{
     const sub = list.filter(f=>f.rank===r);
-    if(!sub.length) return [r,'—','—','0'];
+    if(!sub.length) return [rankLabel(r), '—', '—', 0];
     const ar = avgExcl(sub,'landingRate');
     const ag = avgExcl(sub,'landingG');
-    return [r, ar!=null?fmt(ar,0):'—', ag!=null?fmt(ag,2):'—', sub.length];
+    return [rankLabel(r), ar!=null ? fmt(ar,0) : '—', ag!=null ? fmt(ag,2) : '—', sub.length];
   });
   document.getElementById('svaRankTable').innerHTML = tableHtml(
-    ['RANK','AVG LANDING RATE (FPM)','AVG LANDING G','FLIGHTS'], rankRows
+    ['Rank','Avg rate (fpm)','Avg G','Flights'], rankRows
   );
 
   const ctx = document.getElementById('chartTFP');
-  const sorted = sortedByDate(list);
-  let running = 0;
-  const points = sorted.map(f=>{ running += (f.tfp||0); return {x:f.date, y:+running.toFixed(2)}; });
-  charts.chartTFP = new Chart(ctx, {
-    type:'line',
-    data:{ datasets:[{ data:points, borderColor:getCss('--cyan'), backgroundColor:getCss('--cyan-dim'), fill:true, pointRadius:2, tension:0.15 }]},
-    options:{ responsive:true, plugins:{legend:{display:false}, tooltip:{ callbacks:{
-        title: (items)=> items.length ? formatUtcDate(new Date(items[0].parsed.x)).replace(/^\w+,\s*/,'') : '',
-        label: (c)=> `TFP: ${c.parsed.y}`
-      }}},
-      scales:{ x:{type:'time', time:{unit:'month'}, ticks:{color:getCss('--text-dim')}, grid:{color:getCss('--hairline')}},
-               y:{ ticks:{color:getCss('--text-dim')}, grid:{color:getCss('--hairline')} } } }
-  });
+  if(ctx && chartsReady('chartTFP')){
+    const P = palette();
+    let running = 0;
+    const points = sortedByDate(list).map(f=>{ running += (f.tfp||0); return {x:f.date, y:+running.toFixed(2)}; });
+    charts.chartTFP = new Chart(ctx, {
+      type:'line',
+      data:{ datasets:[{ data:points, borderColor:P.sky, backgroundColor:P.sky + '1f', fill:true, pointRadius:0, pointHoverRadius:4, borderWidth:2, tension:0.1 }]},
+      options:{ responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{display:false}, tooltip:{ ...tooltipBase(P), callbacks:{ title:dateTitle, label:(c)=> `${c.parsed.y} TFP hours` } } },
+        scales:{ x:{ type:'time', time:{unit:'month'}, grid:{display:false}, border:{color:P.line}, ticks:{maxTicksLimit:6, maxRotation:0} },
+                 y:{ grid:{color:P.line}, border:{display:false}, ticks:{maxTicksLimit:6} } } }
+    });
+  }
 
-  document.getElementById('svaAirportTable').innerHTML = tableHtml(
-    ['AIRPORT','VISITS'], airportCounts(list)
-  );
+  renderAirportBars('svaAirportTable', airportCounts(list), 8);
 }
 
 /* ===================== ADD FLIGHT FORM ===================== */
@@ -546,7 +826,8 @@ function renderAddForm(){
       excludeFromAvg: shared ? excludeCb.checked : false,
       sva: isSva,
       tfp: isSva ? parseFloat(document.getElementById('f-tfp').value || '0') : null,
-      rank: isSva ? rank : ''
+      rank: isSva ? rank : '',
+      updatedAt: new Date().toISOString()
     };
     DB.flights.push(flight);
     saveData();
@@ -554,7 +835,7 @@ function renderAddForm(){
     sharedFields.classList.add('hidden');
     svaFields.classList.add('hidden');
     document.getElementById('f-date').valueAsDate = new Date();
-    flashStatus('FLIGHT LOGGED: ' + flight.dep + ' \u2192 ' + flight.arr);
+    flashStatus('Flight saved: ' + flight.dep + ' to ' + flight.arr);
   });
 }
 
@@ -563,9 +844,41 @@ function flashStatus(msg){
   const prev = el.textContent;
   el.textContent = msg;
   setTimeout(()=>{ el.textContent = prev; }, 2200);
+  // the status bar can be off-screen on a phone, so confirm with a toast too
+  const toast = document.getElementById('toast');
+  if(toast){
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(flashStatus._t);
+    flashStatus._t = setTimeout(()=> toast.classList.remove('show'), 2400);
+  }
 }
 
-/* ===================== LOGBOOK TABLE ===================== */
+/* ===================== LOGBOOK ===================== */
+const LOG_PAGE = 40;
+
+// Chips only mark what is unusual. Almost every flight is Southwest Virtual at
+// the current rank, so repeating that on each row just hides the exceptions.
+function stripHtml(f, canDelete, promoted){
+  const tags = [
+    promoted ? `<span class="chip promo">Promoted to ${esc(rankLabel(f.rank))}</span>` : '',
+    !f.sva ? '<span class="chip">General</span>' : '',
+    f.sharedCockpit ? '<span class="chip">Shared cockpit</span>' : '',
+    f.excludeFromAvg ? '<span class="chip warn">Left out of averages</span>' : ''
+  ].join('');
+  return `<article class="strip${f.sva ? ' is-sva' : ''}${f.excludeFromAvg ? ' is-excl' : ''}">`
+    + `<span class="s-date">${esc(prettyDate(f.date))}</span>`
+    + `<span class="s-route">${esc(f.dep)}<i></i>${esc(f.arr)}</span>`
+    + `<span class="s-flt">${esc(f.flightNum || '—')}<small>${esc(f.aircraft || '')}${f.sva ? `<span class="tfp">, ${fmt(f.tfp||0,2)} TFP</span>` : ''}</small></span>`
+    + `<span class="s-num s-time">${fmt(f.elapsed,1)}<small>hr</small></span>`
+    + `<span class="s-num s-rate ${rateClass(f.landingRate)}">${fmt(f.landingRate,0)}<small>fpm</small></span>`
+    + `<span class="s-num s-g">${fmt(f.landingG,2)}<small>g</small></span>`
+    + `<span class="s-tags">${tags}</span>`
+    + (canDelete ? `<button class="icon-btn s-del" type="button" data-id="${esc(f.id)}" aria-label="Delete flight ${esc(f.dep)} to ${esc(f.arr)} on ${esc(prettyDate(f.date))}">Delete</button>` : '')
+    + (f.notes ? `<p class="s-notes">${esc(f.notes)}</p>` : '')
+    + `</article>`;
+}
+
 function renderLogbook(){
   const filterSheet = document.getElementById('filterSheet');
   const filterRank = document.getElementById('filterRank');
@@ -573,70 +886,105 @@ function renderLogbook(){
   const filterAirport = document.getElementById('filterAirport');
   const filterSearch = document.getElementById('filterSearch');
   const clearBtn = document.getElementById('clearFilters');
+  const table = document.getElementById('logbookTable');
+  const countEl = document.getElementById('logCount');
+  let shown = LOG_PAGE;
 
-  // populate dynamic filter options from current data
-  const ranks = [...new Set(DB.flights.map(f=>f.rank).filter(Boolean))];
-  filterRank.innerHTML = '<option value="all">ALL RANKS</option>' + ranks.map(r=>`<option value="${r}">${r}</option>`).join('');
-
+  // filter options come from the current data
+  const ranks = RANKS.filter(r=> DB.flights.some(f=>f.rank===r));
+  filterRank.innerHTML = '<option value="all">All ranks</option>' + ranks.map(r=>`<option value="${esc(r)}">${esc(rankLabel(r))}</option>`).join('');
   const aircraftTypes = [...new Set(DB.flights.map(f=>f.aircraft).filter(Boolean))].sort();
-  filterAircraft.innerHTML = '<option value="all">ALL AIRCRAFT</option>' + aircraftTypes.map(a=>`<option value="${a}">${a}</option>`).join('');
-
+  filterAircraft.innerHTML = '<option value="all">All aircraft</option>' + aircraftTypes.map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join('');
   const airports = [...new Set(DB.flights.flatMap(f=>[f.dep, f.arr]).filter(Boolean))].sort();
-  filterAirport.innerHTML = '<option value="all">ALL AIRPORTS</option>' + airports.map(a=>`<option value="${a}">${a}</option>`).join('');
+  filterAirport.innerHTML = '<option value="all">All airports</option>' + airports.map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join('');
 
-  [filterSheet, filterRank, filterAircraft, filterAirport].forEach(el=> el.addEventListener('change', drawLogbook));
-  filterSearch.addEventListener('input', drawLogbook);
+  [filterSheet, filterRank, filterAircraft, filterAirport].forEach(el=> el.addEventListener('change', ()=>{ shown = LOG_PAGE; draw(); }));
+  filterSearch.addEventListener('input', ()=>{ shown = LOG_PAGE; draw(); });
   clearBtn.addEventListener('click', ()=>{
     filterSheet.value = 'all'; filterRank.value = 'all'; filterAircraft.value = 'all'; filterAirport.value = 'all';
     filterSearch.value = '';
-    drawLogbook();
+    shown = LOG_PAGE; draw();
   });
-  drawLogbook();
 
-  function drawLogbook(){
-    let list = [...DB.flights].sort((a,b)=> new Date(b.date) - new Date(a.date));
-    const sheet = filterSheet.value;
-    if(sheet==='sva') list = list.filter(f=>f.sva);
-    if(sheet==='general') list = list.filter(f=>!f.sva);
+  // one delegated listener handles every strip
+  table.addEventListener('click', e=>{
+    const del = e.target.closest('.icon-btn');
+    if(del){
+      if(getRole() !== 'owner') return;
+      if(confirm('Delete this flight?')){
+        const id = del.dataset.id;
+        DB.flights = DB.flights.filter(f=>f.id!==id);
+        // tombstone so the next sync deletes it in the cloud too
+        DB.deleted.push({ id, deletedAt: new Date().toISOString() });
+        saveData();
+        draw();
+      }
+      return;
+    }
+    if(e.target.closest('[data-more]')){ shown += LOG_PAGE; draw(); }
+  });
 
-    const rank = filterRank.value;
-    if(rank!=='all') list = list.filter(f=>f.rank===rank);
-
-    const aircraft = filterAircraft.value;
-    if(aircraft!=='all') list = list.filter(f=>f.aircraft===aircraft);
-
-    const airport = filterAirport.value;
-    if(airport!=='all') list = list.filter(f=>f.dep===airport || f.arr===airport);
-
+  function draw(){
+    let list = sortedByDate(DB.flights).reverse();
+    if(filterSheet.value==='sva') list = list.filter(f=>f.sva);
+    if(filterSheet.value==='general') list = list.filter(f=>!f.sva);
+    if(filterRank.value!=='all') list = list.filter(f=>f.rank===filterRank.value);
+    if(filterAircraft.value!=='all') list = list.filter(f=>f.aircraft===filterAircraft.value);
+    if(filterAirport.value!=='all') list = list.filter(f=>f.dep===filterAirport.value || f.arr===filterAirport.value);
     const q = filterSearch.value.toUpperCase().trim();
     if(q) list = list.filter(f=> (f.dep+f.arr+f.flightNum).toUpperCase().includes(q));
 
+    const total = DB.flights.length;
+    countEl.textContent = list.length === total
+      ? `${total} flight${total===1 ? '' : 's'}`
+      : `${list.length} of ${total} flights`;
+
+    if(!list.length){
+      table.innerHTML = `<p class="empty">${total ? 'No flights match these filters.' : 'No flights yet. Add one from the Log flight tab.'}</p>`;
+      return;
+    }
     const canDelete = getRole() === 'owner';
-    const rows = list.map(f=>{
-      const flags = [f.sharedCockpit?'SHARED':'', f.excludeFromAvg?'EXCL':'', f.sva?'SVA':''].filter(Boolean).join(' ');
-      return [
-        f.date, f.dep, f.arr, f.flightNum, f.aircraft,
-        fmt(f.elapsed,1), fmt(f.landingRate,0), fmt(f.landingG,2),
-        f.sva ? fmt(f.tfp||0,2) : '—',
-        f.rank || '—',
-        flags || '—',
-        f.notes || '—',
-        canDelete ? `<button class="icon-btn" data-id="${f.id}">DELETE</button>` : ''
-      ];
+    const slice = list.slice(0, shown);
+
+    // Month pages, like a paper logbook: flights and hours for the month,
+    // plus the running total. The running total only makes sense unfiltered.
+    const filtersActive = !!q || [filterSheet, filterRank, filterAircraft, filterAirport].some(el=> el.value !== 'all');
+    const monthTotals = {};
+    list.forEach(f=>{
+      const m = monthTotals[f.date.slice(0,7)] || (monthTotals[f.date.slice(0,7)] = { n:0, hrs:0 });
+      m.n++; m.hrs += f.elapsed || 0;
     });
-    document.getElementById('logbookTable').innerHTML = tableHtml(
-      ['DATE','DEP','ARR','FLT#','A/C','ELAPSED','RATE','G','TFP','RANK','FLAGS','NOTES',''], rows
-    );
-    document.querySelectorAll('#logbookTable .icon-btn').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        if(confirm('Delete this flight?')){
-          DB.flights = DB.flights.filter(f=>f.id!==btn.dataset.id);
-          saveData();
-          drawLogbook();
-        }
-      });
+    const toDate = {};
+    let run = 0;
+    sortedByDate(DB.flights).forEach(f=>{ run += f.elapsed || 0; toDate[f.date.slice(0,7)] = run; });
+    // a flight counts as a promotion when its rank differs from the previous SVA flight's
+    const promoted = {};
+    let prevRank = '';
+    sortedByDate(DB.flights.filter(f=>f.sva && f.rank)).forEach(f=>{
+      if(prevRank && f.rank !== prevRank) promoted[f.id] = true;
+      prevRank = f.rank;
     });
+
+    let body = '', lastMonth = '';
+    slice.forEach(f=>{
+      const ym = f.date.slice(0,7);
+      if(ym !== lastMonth){
+        lastMonth = ym;
+        const m = monthTotals[ym];
+        body += `<h4 class="month"><span class="m-name">${esc(MONTHS[+ym.slice(5,7)-1] || '')} ${esc(ym.slice(0,4))}</span>`
+          + `<span class="m-sum"><span>${m.n} flight${m.n===1?'':'s'}</span><span><b>${fmt(m.hrs,1)}</b> hrs</span>`
+          + (filtersActive ? '' : `<span class="m-todate">Total to date <b>${fmt(toDate[ym] || 0,1)}</b></span>`)
+          + '</span></h4>';
+      }
+      body += stripHtml(f, canDelete, !!promoted[f.id]);
+    });
+
+    table.innerHTML =
+      '<div class="strip-head" aria-hidden="true"><span>Date</span><span>Route</span><span>Flight</span><span class="num">Time</span><span class="num">Rate</span><span class="num">G</span><span>Details</span><span></span></div>'
+      + body
+      + (list.length > shown ? `<div class="more"><button class="btn-ghost" type="button" data-more>Show ${Math.min(LOG_PAGE, list.length - shown)} more (${list.length - shown} left)</button></div>` : '');
   }
+  draw();
 }
 
 /* ===================== DATA TAB: IMPORT/EXPORT ===================== */
@@ -654,9 +1002,9 @@ function renderData(){
   document.getElementById('restoreFile').addEventListener('change', handleRestore);
   document.getElementById('wipeData').addEventListener('click', ()=>{
     if(confirm('This permanently erases all logged flights from this browser. Continue?')){
-      DB = { flights: [] };
+      DB = normalizeDB(null);
       saveData();
-      flashStatus('ALL DATA ERASED');
+      flashStatus('All data erased from this device');
       route('data');
     }
   });
@@ -671,12 +1019,12 @@ function renderData(){
     if(supa){
       setup.classList.add('hidden');
       connected.classList.remove('hidden');
-      pill.textContent = usingDefaults ? 'CONNECTED (BUILT-IN)' : 'CONNECTED';
+      pill.textContent = usingDefaults ? 'Connected (built in)' : 'Connected';
       pill.className = 'sync-pill online';
     }else{
       setup.classList.remove('hidden');
       connected.classList.add('hidden');
-      pill.textContent = 'DISCONNECTED';
+      pill.textContent = 'Disconnected';
       pill.className = 'sync-pill';
     }
   }
@@ -706,7 +1054,7 @@ function renderData(){
     const btn = e.currentTarget;
     btn.disabled = true;
     const originalLabel = btn.textContent;
-    btn.textContent = 'SYNCING...';
+    btn.textContent = 'Syncing...';
     syncStatusEl.textContent = 'Syncing...';
     syncStatusEl.style.color = '';
     try{
@@ -714,7 +1062,7 @@ function renderData(){
       syncStatusEl.textContent = res.msg;
       syncStatusEl.style.color = res.ok ? '' : 'var(--red)';
       if(res.ok){
-        flashStatus('CLOUD SYNC COMPLETE — ' + DB.flights.length + ' FLIGHTS');
+        flashStatus('Cloud sync complete: ' + DB.flights.length + ' flights');
         const activeTab = document.querySelector('.tab.active');
         if(activeTab && activeTab.dataset.tab !== 'data') route(activeTab.dataset.tab);
       }
@@ -774,7 +1122,7 @@ function handleImport(e){
   const file = e.target.files[0];
   if(!file) return;
   const statusEl = document.getElementById('importStatus');
-  statusEl.textContent = 'READING ' + file.name + '...';
+  statusEl.textContent = 'Reading ' + file.name + '...';
   const reader = new FileReader();
   reader.onload = (evt)=>{
     try{
@@ -788,7 +1136,7 @@ function handleImport(e){
             iElapsed=idx('ELAPSED'), iTfp=idx('TFP'), iRate=idx('LANDING R'), iG=idx('LANDING G'),
             iAc=idx('AIRCRAFT'), iNotes=idx('NOTES');
       if(iDep<0 || iArr<0 || iRate<0){
-        statusEl.textContent = 'COULD NOT FIND EXPECTED COLUMNS IN "' + sheetName + '". CHECK FILE FORMAT.';
+        statusEl.textContent = 'Could not find the expected columns in "' + sheetName + '". Check the file format.';
         return;
       }
       const isSvaSheet = iTfp>=0;
@@ -828,6 +1176,7 @@ function handleImport(e){
             existing.sva = true;
             existing.tfp = tfp;
             existing.rank = rank;
+            existing.updatedAt = new Date().toISOString();
             merged++;
           } else if(!isSvaSheet && !existing._importedThisBatch){
             // re-importing general sheet over an SVA-only stub, or a true duplicate re-import: just skip
@@ -842,7 +1191,7 @@ function handleImport(e){
         const flight = {
           id: uid(),
           dep, arr,
-          flightNum: String(row[iFlt]>=0 ? row[iFlt] : '').trim().toUpperCase(),
+          flightNum: String(iFlt>=0 ? row[iFlt] : '').trim().toUpperCase(),
           date,
           elapsed: parseFloat(row[iElapsed]) || 0,
           landingRate: rate,
@@ -855,6 +1204,7 @@ function handleImport(e){
           sva: isSvaSheet,
           tfp,
           rank,
+          updatedAt: new Date().toISOString(),
           _importedThisBatch: true
         };
         DB.flights.push(flight);
@@ -865,9 +1215,9 @@ function handleImport(e){
       DB.flights.forEach(f=>{ delete f._importedThisBatch; });
       saveData();
       const rankNote = isSvaSheet ? (thresholds ? ' Rank assigned from RANK PROGRESS leg thresholds.' : ' No RANK PROGRESS sheet found — rank left blank, set manually if needed.') : '';
-      statusEl.textContent = `IMPORTED ${added} new, merged ${merged} into existing flights, skipped ${skipped} duplicates, from "${sheetName}".` + rankNote;
+      statusEl.textContent = `Imported ${added} new, merged ${merged} into existing flights, skipped ${skipped} duplicates, from "${sheetName}".` + rankNote;
     }catch(err){
-      statusEl.textContent = 'IMPORT FAILED: ' + err.message;
+      statusEl.textContent = 'Import failed: ' + err.message;
     }
   };
   reader.readAsArrayBuffer(file);
@@ -963,9 +1313,9 @@ function handleRestore(e){
     try{
       const data = JSON.parse(evt.target.result);
       if(!Array.isArray(data.flights)) throw new Error('Invalid backup file');
-      DB = data;
+      DB = normalizeDB(data);
       saveData();
-      flashStatus('BACKUP RESTORED: ' + DB.flights.length + ' FLIGHTS');
+      flashStatus('Backup restored: ' + DB.flights.length + ' flights');
       route('data');
     }catch(err){
       alert('Restore failed: ' + err.message);
@@ -974,11 +1324,7 @@ function handleRestore(e){
   reader.readAsText(file);
 }
 
-document.getElementById('lockBtn').addEventListener('click', ()=>{
-  sessionStorage.removeItem('flightlog_role');
-  route('dashboard');
-  flashStatus('LOCKED');
-});
+document.getElementById('lockBtn').addEventListener('click', signOut);
 
 const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -1001,26 +1347,51 @@ tickClock();
 setInterval(tickClock, 1000);
 
 /* ===================== INIT ===================== */
-async function autoPullIfEmpty(){
-  if(DB.flights.length === 0 && supa){
-    const statusEl = document.getElementById('statusLeft');
-    if(statusEl) statusEl.textContent = 'NO LOCAL DATA // PULLING FROM CLOUD...';
-    // race the sync against a 6-second timeout so a slow/offline Supabase never freezes the page
-    const timeout = new Promise(resolve => setTimeout(()=> resolve({ok:false, msg:'Cloud timed out — load the page again when connected, or restore a JSON backup.'}), 6000));
-    const res = await Promise.race([syncNow(), timeout]);
-    if(!res.ok){
-      if(statusEl) statusEl.textContent = 'CLOUD PULL FAILED: ' + res.msg;
-    } else if(DB.flights.length > 0){
-      if(statusEl) statusEl.textContent = 'LOADED ' + DB.flights.length + ' FLIGHTS FROM CLOUD';
-    }
+// Viewers always pull so they see current data. The owner pulls only when this
+// device has nothing yet, and syncs by hand after that.
+async function pullAfterSignIn(){
+  if(!supa || !authState || authState.offline) return;
+  if(authState.role === 'owner' && DB.flights.length > 0) return;
+  const statusEl = document.getElementById('statusLeft');
+  if(statusEl) statusEl.textContent = 'Pulling from the cloud...';
+  // race the sync against a 6-second timeout so a slow or offline Supabase never freezes the page
+  const timeout = new Promise(resolve => setTimeout(()=> resolve({ok:false, msg:'Cloud timed out. Load the page again when connected, or restore a JSON backup.'}), 6000));
+  const res = await Promise.race([syncNow(), timeout]);
+  if(!res.ok){
+    if(statusEl) statusEl.textContent = 'Cloud pull failed: ' + res.msg;
+  }else if(DB.flights.length > 0){
+    if(statusEl) statusEl.textContent = 'Loaded ' + DB.flights.length + ' flights from the cloud';
   }
 }
 
+function currentTab(){
+  const t = document.querySelector('.tab.active');
+  return t ? t.dataset.tab : 'dashboard';
+}
+
 initCloud();
-autoPullIfEmpty()
+
+// If this device remembers a sign-in, open straight away and check it in the
+// background, so a slow or missing connection never leaves a blank page.
+const rememberedSignIn = readAuthCache();
+if(rememberedSignIn){
+  applyAuth({ ...rememberedSignIn, offline:true });
+  route('dashboard');
+}
+const stateKey = ()=> authState ? authState.role + (authState.offline ? '~' : '') : 'out';
+const keyBefore = stateKey();
+const flightsBefore = DB.flights.length;
+
+initAuth()
+  .then(pullAfterSignIn)
   .catch(err => {
-    console.error('autoPullIfEmpty error:', err);
+    console.error('Startup error:', err);
     const statusEl = document.getElementById('statusLeft');
-    if(statusEl) statusEl.textContent = 'INIT ERROR: ' + (err.message || err);
+    if(statusEl) statusEl.textContent = 'Startup error: ' + (err.message || err);
   })
-  .finally(() => route('dashboard'));
+  .finally(() => {
+    // Redraw only if something changed, so a form being filled in is not wiped.
+    if(!rememberedSignIn || stateKey() !== keyBefore || DB.flights.length !== flightsBefore){
+      route(rememberedSignIn && getRole() ? currentTab() : 'dashboard');
+    }
+  });

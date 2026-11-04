@@ -2,177 +2,228 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FLIGHTLOG // Cockpit Logbook</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0d1826">
+<title>Flightlog</title>
 <!-- FAVICON: active icon is favicon.svg. To switch, copy any file from /favicons/ over
      favicon.svg (or just change the href below to point at a different one). -->
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="alternate icon" href="favicon.svg">
 <link rel="stylesheet" href="style.css">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Archivo:wght@500;600;700;800&display=swap" rel="stylesheet">
 </head>
-<body>
+<body data-auth="out">
 
-<div class="bezel-frame">
+<div class="shell">
 
   <header class="topbar">
-    <div class="topbar-id">
-      <span class="lamp" id="lamp"></span>
-      <div class="topbar-title">
-        <span class="brand">FLIGHTLOG</span>
-        <span class="brand-sub">PERSONAL FLIGHT DATA RECORDER</span>
-      </div>
+    <div class="brand-block">
+      <span class="lamp" id="lamp" title="Cloud sync status"></span>
+      <span class="brand">Flightlog</span>
     </div>
-    <div class="utc-clock" id="utcClock">
-      <span class="utc-date" id="utcDate"></span>
-      <span class="utc-time" id="utcTime"></span>
-      <span class="utc-label">UTC</span>
-    </div>
-    <nav class="tabs" id="tabs">
-      <button class="tab active" data-tab="dashboard">DASHBOARD</button>
-      <button class="tab" data-tab="sva">SOUTHWEST VIRTUAL</button>
-      <button class="tab" data-tab="add">LOG FLIGHT</button>
-      <button class="tab" data-tab="logbook">LOGBOOK</button>
-      <button class="tab" data-tab="data">DATA</button>
-      <button class="tab lock-btn" id="lockBtn" type="button" title="Lock Log Flight &amp; Data tabs">&#128274; LOCK</button>
+
+    <nav class="tabs" id="tabs" aria-label="Sections">
+      <button class="tab active" data-tab="dashboard">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+        <span>Dashboard</span>
+      </button>
+      <button class="tab" data-tab="sva">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3 3 10l7 3 3 7z"/><path d="M10 13 21 3"/></svg>
+        <span><span class="full">Southwest Virtual</span><span class="short">SVA</span></span>
+      </button>
+      <button class="tab" data-tab="add">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+        <span><span class="full">Log flight</span><span class="short">Log</span></span>
+      </button>
+      <button class="tab" data-tab="logbook">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/></svg>
+        <span>Logbook</span>
+      </button>
+      <button class="tab" data-tab="data">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+        <span>Data</span>
+      </button>
     </nav>
+
+    <div class="topbar-end">
+      <div class="utc-clock" id="utcClock" aria-label="Current UTC time">
+        <span class="utc-time"><span id="utcTime"></span><span class="utc-label">UTC</span></span>
+        <span class="utc-date" id="utcDate"></span>
+      </div>
+      <button class="lock-btn" id="lockBtn" type="button" title="Sign out" aria-label="Sign out">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/></svg>
+        <span class="lock-text">Sign out</span>
+      </button>
+    </div>
   </header>
 
   <main id="view"></main>
 
-  <footer class="statusbar">
-    <span id="statusLeft">STANDBY</span>
+  <footer class="statusbar" role="status" aria-live="polite">
+    <span id="statusLeft">Standby</span>
     <span id="statusRight"></span>
   </footer>
 </div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <template id="tpl-dashboard">
-  <section class="panel-grid">
-    <div class="dial-row" id="dash-dials"></div>
-
-    <div class="card chart-card">
-      <div class="card-head"><span class="card-label">01</span><h3>LANDING RATE — FPM AT TOUCHDOWN</h3></div>
-      <canvas id="chartRate" height="220"></canvas>
-      <div class="legend-strip">
-        <span><i class="dot dot-amber"></i>NORMAL</span>
-        <span><i class="dot dot-cyan"></i>EXCLUDED (PM LANDING)</span>
-        <span><i class="dot dot-green"></i>NOTES ATTACHED</span>
+  <section class="page">
+    <div class="hero">
+      <div class="hobbs-block">
+        <span class="hobbs-label">Total time</span>
+        <div class="hobbs" id="dash-hobbs" role="img" aria-label="Total time"></div>
+        <span class="hobbs-unit">hours</span>
       </div>
+      <dl class="facts" id="dash-facts"></dl>
     </div>
 
-    <div class="card chart-card">
-      <div class="card-head"><span class="card-label">02</span><h3>LANDING G — VERTICAL LOAD</h3></div>
-      <canvas id="chartG" height="220"></canvas>
-    </div>
+    <h2 class="section-title">Landings</h2>
+    <div class="spread" id="dash-spread"></div>
+    <dl class="ledger" id="dash-ledger"></dl>
 
-    <div class="card chart-card">
-      <div class="card-head"><span class="card-label">03</span><h3>HOURS FLOWN BY MONTH</h3></div>
-      <canvas id="chartHours" height="200"></canvas>
-    </div>
+    <div class="panel-grid">
+      <section class="panel">
+        <header class="panel-head"><h3>Landing rate</h3><p>Feet per minute at touchdown</p></header>
+        <div class="chart-box"><canvas id="chartRate"></canvas></div>
+        <div class="key">
+          <span><i class="dot dot-steel"></i>Normal</span>
+          <span><i class="dot dot-accent"></i>Notes attached</span>
+          <span><i class="dot dot-rose"></i>Excluded (PM landing)</span>
+          <span><i class="dot dot-band"></i>Smooth zone, under 150 fpm</span>
+        </div>
+      </section>
 
-    <div class="card chart-card">
-      <div class="card-head"><span class="card-label">04</span><h3>AIRCRAFT TYPES FLOWN</h3></div>
-      <canvas id="chartAircraft" height="280"></canvas>
-      <div class="chart-legend" id="aircraftLegend"></div>
-    </div>
+      <section class="panel">
+        <header class="panel-head"><h3>Landing G</h3><p>Vertical load at touchdown</p></header>
+        <div class="chart-box"><canvas id="chartG"></canvas></div>
+      </section>
 
-    <div class="card">
-      <div class="card-head"><span class="card-label">05</span><h3>AIRPORTS VISITED</h3></div>
-      <div class="table-scroll" id="airportTable"></div>
+      <section class="panel span-2">
+        <header class="panel-head"><h3>Hours by month</h3><p>Time flown in each calendar month</p></header>
+        <div class="chart-box short"><canvas id="chartHours"></canvas></div>
+      </section>
+
+      <section class="panel">
+        <header class="panel-head"><h3>Aircraft types</h3><p>Share of all flights</p></header>
+        <div class="pie-wrap">
+          <div class="pie-box"><canvas id="chartAircraft"></canvas></div>
+          <ul class="chart-legend" id="aircraftLegend"></ul>
+        </div>
+      </section>
+
+      <section class="panel">
+        <header class="panel-head"><h3>Airports</h3><p>Departures and arrivals combined</p></header>
+        <div id="airportTable"></div>
+      </section>
     </div>
   </section>
 </template>
 
 <template id="tpl-sva">
-  <section class="panel-grid">
-    <div class="dial-row" id="sva-dials"></div>
-
-    <div class="card">
-      <div class="card-head"><span class="card-label">05</span><h3>SENIORITY PROGRESSION — AVG LANDING RATE / G</h3></div>
-      <div class="table-scroll" id="svaRankTable"></div>
+  <section class="page">
+    <div class="hero">
+      <div class="hobbs-block">
+        <span class="hobbs-label">Southwest Virtual time</span>
+        <div class="hobbs" id="sva-hobbs" role="img" aria-label="Southwest Virtual time"></div>
+        <span class="hobbs-unit">hours</span>
+      </div>
+      <dl class="facts" id="sva-facts"></dl>
     </div>
 
-    <div class="card chart-card">
-      <div class="card-head"><span class="card-label">06</span><h3>TFP ACCRUED OVER TIME</h3></div>
-      <canvas id="chartTFP" height="220"></canvas>
-    </div>
+    <h2 class="section-title">Landings</h2>
+    <div class="spread" id="sva-spread"></div>
+    <dl class="ledger" id="sva-ledger"></dl>
 
-    <div class="card">
-      <div class="card-head"><span class="card-label">07</span><h3>SVA DESTINATIONS</h3></div>
-      <div class="table-scroll" id="svaAirportTable"></div>
+    <div class="panel-grid">
+      <section class="panel span-2">
+        <header class="panel-head"><h3>TFP over time</h3><p>Running total of TFP hours</p></header>
+        <div class="chart-box"><canvas id="chartTFP"></canvas></div>
+      </section>
+
+      <section class="panel">
+        <header class="panel-head"><h3>Seniority</h3><p>Average landing by rank</p></header>
+        <div class="table-scroll" id="svaRankTable"></div>
+      </section>
+
+      <section class="panel">
+        <header class="panel-head"><h3>Destinations</h3><p>Southwest Virtual airports</p></header>
+        <div id="svaAirportTable"></div>
+      </section>
     </div>
   </section>
 </template>
 
-<template id="tpl-lock">
+<template id="tpl-signin">
   <section class="form-wrap">
-    <div class="card lock-card">
-      <div class="card-head"><span class="card-label">SEC</span><h3>ENTER ACCESS CODE</h3></div>
-      <div class="pin-dots" id="pinDots">
-        <span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span>
+    <form class="panel signin-card" id="signinForm" novalidate>
+      <h3 class="lock-title">Sign in</h3>
+      <p class="hint">Use the account you were given for this logbook.</p>
+      <label>Email
+        <input id="si-email" type="email" autocomplete="username" inputmode="email" autocapitalize="none" spellcheck="false">
+      </label>
+      <label>Password
+        <input id="si-pass" type="password" autocomplete="current-password">
+      </label>
+      <p class="hint" id="signinMsg" aria-live="polite"></p>
+      <div class="form-actions">
+        <button class="btn-primary" id="signinBtn" type="submit">Sign in</button>
       </div>
-      <p class="hint" id="lockHint">&nbsp;</p>
-      <div class="keypad" id="keypad">
-        <button data-key="1">1</button><button data-key="2">2</button><button data-key="3">3</button>
-        <button data-key="4">4</button><button data-key="5">5</button><button data-key="6">6</button>
-        <button data-key="7">7</button><button data-key="8">8</button><button data-key="9">9</button>
-        <button class="key-ghost" data-key="clear" type="button">CLEAR</button>
-        <button data-key="0">0</button>
-        <button class="key-ghost" data-key="back" type="button">&#9003;</button>
-      </div>
-    </div>
+    </form>
   </section>
 </template>
 
 <template id="tpl-add">
   <section class="form-wrap">
-    <form class="card form-card" id="flightForm">
-      <div class="card-head"><span class="card-label">NEW</span><h3>LOG FLIGHT</h3></div>
+    <form class="panel form-card" id="flightForm">
+      <header class="panel-head"><h3>Log a flight</h3><p>Fill in the flight, then save it to your logbook.</p></header>
 
-      <div class="grid-2">
-        <label>DEP <input required maxlength="4" id="f-dep" placeholder="KHOU" class="mono upper"></label>
-        <label>ARR <input required maxlength="4" id="f-arr" placeholder="KDAL" class="mono upper"></label>
+      <h4 class="form-group">Route</h4>
+      <div class="grid-2 pair">
+        <label>Departure<input required maxlength="4" id="f-dep" placeholder="KHOU" class="upper"></label>
+        <label>Arrival <input required maxlength="4" id="f-arr" placeholder="KDAL" class="upper"></label>
       </div>
-      <div class="grid-2">
-        <label>FLIGHT # <input required id="f-flightnum" placeholder="SWA20" class="mono upper"></label>
-        <label>AIRCRAFT <input required id="f-aircraft" placeholder="B738" class="mono upper" maxlength="6"></label>
-      </div>
-      <div class="grid-2">
-        <label>DATE <input required type="date" id="f-date" class="mono"></label>
-        <label>ELAPSED (HRS) <input required type="number" inputmode="decimal" step="0.1" min="0" id="f-elapsed" class="mono"></label>
-      </div>
-      <div class="grid-2">
-        <label>LANDING RATE (FPM) <input required type="number" inputmode="decimal" step="0.1" id="f-landingrate" class="mono" placeholder="-307.6"></label>
-        <label>LANDING G <input required type="number" inputmode="decimal" step="0.01" min="0" id="f-landingg" class="mono" placeholder="1.59"></label>
+      <div class="grid-2 pair">
+        <label>Flight number<input required id="f-flightnum" placeholder="SWA20" class="upper"></label>
+        <label>Aircraft <input required id="f-aircraft" placeholder="B738" class="upper" maxlength="6"></label>
       </div>
 
-      <label class="check"><input type="checkbox" id="f-shared"> SHARED COCKPIT</label>
+      <h4 class="form-group">Time</h4>
+      <div class="grid-2 pair">
+        <label>Date<input required type="date" id="f-date"></label>
+        <label>Elapsed (hours) <input required type="number" inputmode="decimal" step="0.1" min="0" id="f-elapsed"></label>
+      </div>
+
+      <h4 class="form-group">Landing</h4>
+      <div class="grid-2 pair">
+        <label>Rate (fpm)<input required type="number" inputmode="decimal" step="0.1" id="f-landingrate" placeholder="-307.6"></label>
+        <label>G force <input required type="number" inputmode="decimal" step="0.01" min="0" id="f-landingg" placeholder="1.59"></label>
+      </div>
+
+      <label class="check"><input type="checkbox" id="f-shared"> Shared cockpit</label>
 
       <div class="grid-2 shared-only hidden" id="sharedFields">
-        <label>ROLE THIS LEG
-          <select id="f-role" class="mono">
-            <option value="">—</option>
-            <option value="PF TO/PF LDG">PF TO / PF LDG</option>
-            <option value="PF TO/PM LDG">PF TO / PM LDG</option>
-            <option value="PM TO/PF LDG">PM TO / PF LDG</option>
-            <option value="PM TO/PM LDG">PM TO / PM LDG</option>
+        <label>Role this leg
+          <select id="f-role">
+            <option value="">Choose a role</option>
+            <option value="PF TO/PF LDG">PF takeoff, PF landing</option>
+            <option value="PF TO/PM LDG">PF takeoff, PM landing</option>
+            <option value="PM TO/PF LDG">PM takeoff, PF landing</option>
+            <option value="PM TO/PM LDG">PM takeoff, PM landing</option>
           </select>
         </label>
-        <label>EXCLUDE FROM AVG RATES
-          <span class="check inline-check"><input type="checkbox" id="f-exclude"> excluded (auto-set when you landed as PM)</span>
+        <label>Averages
+          <span class="check inline-check"><input type="checkbox" id="f-exclude"> Leave out of averages (set automatically for PM landings)</span>
         </label>
       </div>
 
       <hr class="divider">
 
-      <label class="check sva-toggle"><input type="checkbox" id="f-issva"> LOG TO SOUTHWEST VIRTUAL TRACKER</label>
+      <label class="check sva-toggle"><input type="checkbox" id="f-issva"> Count toward Southwest Virtual</label>
 
       <div class="grid-2 sva-only hidden" id="svaFields">
-        <label>TFP (HRS) <input type="number" inputmode="decimal" step="0.01" min="0" id="f-tfp" class="mono" placeholder="1.0"></label>
-        <label>SENIORITY RANK
-          <select id="f-rank" class="mono">
-            <option value="">—</option>
+        <label>TFP (hours) <input type="number" inputmode="decimal" step="0.01" min="0" id="f-tfp" placeholder="1.0"></label>
+        <label>Seniority rank
+          <select id="f-rank">
+            <option value="">Choose a rank</option>
             <option>NEW HIRE</option>
             <option>IOE PILOT</option>
             <option>JUNIOR FIRST OFFICER</option>
@@ -182,91 +233,98 @@
         </label>
       </div>
 
-      <label class="full">NOTES <textarea id="f-notes" rows="2" placeholder="MANUAL REPORT, WINDSHEAR ON FINAL, etc."></textarea></label>
+      <label class="full">Notes <textarea id="f-notes" rows="2" placeholder="Manual report, windshear on final"></textarea></label>
 
       <div class="form-actions">
-        <button type="submit" class="btn-primary">SUBMIT REPORT</button>
-        <button type="reset" class="btn-ghost">CLEAR</button>
+        <button type="submit" class="btn-primary">Save flight</button>
+        <button type="reset" class="btn-ghost">Reset form</button>
       </div>
     </form>
   </section>
 </template>
 
 <template id="tpl-logbook">
-  <section class="panel-grid single">
-    <div class="card">
-      <div class="card-head row-between">
-        <div><span class="card-label">LOG</span><h3>FLIGHT LOGBOOK</h3></div>
+  <section class="page">
+    <section class="panel logbook-panel">
+      <header class="panel-head">
+        <h3>Logbook</h3>
+        <p id="logCount">&nbsp;</p>
+      </header>
+      <div class="filter-row">
+        <select id="filterSheet" aria-label="Flight type">
+          <option value="all">All flights</option>
+          <option value="sva">Southwest Virtual only</option>
+          <option value="general">General only</option>
+        </select>
+        <select id="filterRank" aria-label="Rank">
+          <option value="all">All ranks</option>
+        </select>
+        <select id="filterAircraft" aria-label="Aircraft">
+          <option value="all">All aircraft</option>
+        </select>
+        <select id="filterAirport" aria-label="Airport">
+          <option value="all">All airports</option>
+        </select>
+        <input id="filterSearch" type="search" placeholder="Search airport or flight number" aria-label="Search">
+        <button class="btn-ghost" id="clearFilters" type="button">Clear filters</button>
       </div>
-      <div class="filter-row filter-row-wrap">
-        <select id="filterSheet" class="mono">
-          <option value="all">ALL FLIGHTS</option>
-          <option value="sva">SVA ONLY</option>
-          <option value="general">GENERAL ONLY</option>
-        </select>
-        <select id="filterRank" class="mono">
-          <option value="all">ALL RANKS</option>
-        </select>
-        <select id="filterAircraft" class="mono">
-          <option value="all">ALL AIRCRAFT</option>
-        </select>
-        <select id="filterAirport" class="mono">
-          <option value="all">ALL AIRPORTS</option>
-        </select>
-        <input id="filterSearch" class="mono" placeholder="SEARCH DEP/ARR/FLT#">
-        <button class="btn-ghost" id="clearFilters" type="button">CLEAR</button>
-      </div>
-      <div class="table-scroll tall" id="logbookTable"></div>
-    </div>
+      <p class="rate-key" id="rateKey">
+        <span><i class="sw sw-smooth"></i>Smooth, under 150 fpm</span>
+        <span><i class="sw sw-firm"></i>Firm, over 350</span>
+        <span><i class="sw sw-hard"></i>Hard, over 500</span>
+      </p>
+      <div id="logbookTable"></div>
+    </section>
   </section>
 </template>
 
 <template id="tpl-data">
-  <section class="panel-grid single">
-    <div class="card">
-      <div class="card-head row-between">
-        <div><span class="card-label">CLOUD</span><h3>CLOUD SYNC — SUPABASE</h3></div>
-        <span class="sync-pill" id="syncPill">DISCONNECTED</span>
-      </div>
-      <p class="hint" id="cloudIntro">Connect a free Supabase project to back this logbook up to the cloud. Until connected, everything stays local-only — Export/Import JSON below always works offline regardless of cloud status.</p>
+  <section class="page narrow">
+    <section class="panel">
+      <header class="panel-head row-between">
+        <div><h3>Cloud sync</h3><p>Supabase</p></div>
+        <span class="sync-pill" id="syncPill">Disconnected</span>
+      </header>
+      <p class="hint" id="cloudIntro">Connect a free Supabase project to back this logbook up to the cloud. Until you connect, everything stays on this device. JSON export and import below always work offline.</p>
 
       <div id="cloudSetup">
         <div class="grid-2">
-          <label>PROJECT URL <input id="c-url" class="mono" placeholder="https://xxxx.supabase.co"></label>
-          <label>ANON KEY <input id="c-key" class="mono" placeholder="eyJ..."></label>
+          <label>Project URL <input id="c-url" placeholder="https://xxxx.supabase.co"></label>
+          <label>Anon key <input id="c-key" placeholder="eyJ..."></label>
         </div>
         <div class="form-actions">
-          <button class="btn-primary" id="connectCloud">CONNECT</button>
+          <button class="btn-primary" id="connectCloud">Connect</button>
         </div>
       </div>
 
       <div id="cloudConnected" class="hidden">
         <div class="form-actions">
-          <button class="btn-primary" id="syncNow">SYNC NOW</button>
-          <button class="btn-ghost" id="disconnectCloud">DISCONNECT</button>
+          <button class="btn-primary" id="syncNow">Sync now</button>
+          <button class="btn-ghost" id="disconnectCloud">Disconnect</button>
         </div>
-        <p class="hint mono" id="syncStatus"></p>
+        <p class="hint" id="syncStatus"></p>
       </div>
-    </div>
+    </section>
 
-    <div class="card">
-      <div class="card-head"><span class="card-label">I/O</span><h3>IMPORT EXISTING SPREADSHEET</h3></div>
-      <p class="hint">Upload your LOGBOOK.xlsx or SVA_FLIGHT_TRACKER.xlsx to migrate existing flights. Detects DEP/ARR/FLIGHT#/DATE/ELAPSED/TFP/LANDING R/LANDING G/AIRCRAFT/NOTES columns automatically, and reads a RANK PROGRESS sheet (if present) to assign seniority rank correctly. Shared cockpit flights are auto-flagged from notes text — review after import.</p>
+    <section class="panel">
+      <header class="panel-head"><h3>Import a spreadsheet</h3><p>LOGBOOK.xlsx or SVA_FLIGHT_TRACKER.xlsx</p></header>
+      <p class="hint">Columns are detected automatically (DEP, ARR, FLIGHT #, DATE, ELAPSED, TFP, LANDING R, LANDING G, AIRCRAFT, NOTES). A RANK PROGRESS sheet, if present, sets each flight's seniority rank. Shared cockpit flights are flagged from the notes text, so review them after importing.</p>
       <input type="file" id="importFile" accept=".xlsx,.xls">
-      <div id="importStatus" class="hint mono"></div>
-    </div>
-    <div class="card">
-      <div class="card-head"><span class="card-label">EXP</span><h3>BACKUP / RESTORE (OFFLINE-SAFE)</h3></div>
-      <p class="hint">Works with no internet connection, independent of cloud sync. Export a JSON backup regularly, or move it to another device.</p>
+      <div id="importStatus" class="hint"></div>
+    </section>
+
+    <section class="panel">
+      <header class="panel-head"><h3>Backup and export</h3><p>Works offline, separate from cloud sync</p></header>
+      <p class="hint">Export a JSON backup regularly, or use it to move your logbook to another device.</p>
       <div class="form-actions">
-        <button class="btn-primary" id="exportJson">EXPORT JSON</button>
-        <button class="btn-ghost" id="exportCsv">EXPORT CSV</button>
-        <button class="btn-ghost" id="exportPdf">EXPORT PDF</button>
-        <label class="btn-ghost file-btn">RESTORE JSON<input type="file" id="restoreFile" accept=".json" hidden></label>
+        <button class="btn-primary" id="exportJson">Export JSON</button>
+        <button class="btn-ghost" id="exportCsv">Export CSV</button>
+        <button class="btn-ghost" id="exportPdf">Export PDF</button>
+        <label class="btn-ghost file-btn">Restore JSON<input type="file" id="restoreFile" accept=".json" hidden></label>
       </div>
       <hr class="divider">
-      <button class="btn-danger" id="wipeData">ERASE ALL DATA</button>
-    </div>
+      <button class="btn-danger" id="wipeData">Erase all data on this device</button>
+    </section>
   </section>
 </template>
 
