@@ -1,48 +1,31 @@
-/* ===================== CLOUD SYNC (SUPABASE) ===================== */
-//
-// Fill these in ONCE, then redeploy, and every device will auto-connect —
-// no more typing the URL/key in on each new phone or browser.
-//
-// This is safe in the way Supabase is designed to be used: the "anon" key
-// is meant to be public/client-visible — it is NOT a secret like a service
-// role key. The real access boundary is your Row Level Security (RLS)
-// policy on the `flights` table, not whether this key is hidden.
-//
-// What hardcoding it here actually changes: right now the key only lived
-// in your own browser's local storage. Baking it into this file means it
-// ships inside script.js — so if your GitHub repo is PUBLIC, anyone could
-// find it by reading the repo or your live site's JS. If your repo is
-// private, exposure is limited to anyone who opens dev tools on your own
-// deployed site (which they could do either way, since it's still
-// client-side JS — there's no way to truly hide a credential in a static
-// site without a backend).
-//
-// Access is enforced by Supabase Auth plus Row Level Security (see
-// supabase_auth_setup.sql). Signing in gives each person a session token;
-// the database only lets the owner write and lets any signed-in user read.
-// Nothing in this file grants access on its own.
-//
-const DEFAULT_SUPABASE_URL = 'https://zdwmjlfkctlcjcdxwhbu.supabase.co';   // <-- paste your Supabase project URL here, e.g. 'https://xxxx.supabase.co'
-const DEFAULT_SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpkd21qbGZrY3RsY2pjZHh3aGJ1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1ODk2MzUsImV4cCI6MjA5ODE2NTYzNX0.r3R3QNYbJ5RRThraXIARtUMIwHmvXK9QjOw-6Ugi3iw';   // <-- paste your anon public key here
-
-const CLOUD_KEY = 'flightlog_cloud_cfg';
-let cloudCfg = JSON.parse(localStorage.getItem(CLOUD_KEY) || 'null');
-if(!cloudCfg && DEFAULT_SUPABASE_URL && DEFAULT_SUPABASE_KEY){
-  cloudCfg = { url: DEFAULT_SUPABASE_URL, key: DEFAULT_SUPABASE_KEY };
-}
-let supa = null;
-
-function initCloud(){
-  if(cloudCfg && cloudCfg.url && cloudCfg.key && window.supabase){
-    try{
-      supa = window.supabase.createClient(cloudCfg.url, cloudCfg.key, {
-        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
-      });
-    }
-    catch(e){ supa = null; }
+/* ===================== CLOUD SYNC =====================
+   The browser never talks to the database. It calls this site's own /api
+   functions (hosted on Vercel), which hold the database key. Anyone can read.
+   Only a logged-in admin can write, and the server checks that on every save. */
+async function api(path, options){
+  const opts = options || {};
+  const ctl = new AbortController();
+  const timer = setTimeout(()=> ctl.abort(), opts.timeoutMs || 15000);
+  try{
+    const res = await fetch(path, {
+      method: opts.method || 'GET',
+      body: opts.body,
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal: ctl.signal,
+      headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }
+    });
+    let data = null;
+    try{ data = await res.json(); }catch(e){}
+    return { ok: res.ok, status: res.status, data };
+  }finally{
+    clearTimeout(timer);
   }
-  setLamp(supa ? 'idle' : 'offline');
 }
+
+function initCloud(){ setLamp('idle'); }
+
+let dataVersion = 0; // bumps whenever a sync changes the local data
 
 function setLamp(state){
   const lamp = document.getElementById('lamp');
@@ -79,44 +62,33 @@ function fromRow(r){
 
 function ts(v){ const t = Date.parse(v || ''); return isNaN(t) ? 0 : t; }
 
-async function syncNow(){
-  if(!supa) return { ok:false, msg:'Not connected. Add your Supabase credentials in the Data tab.' };
+async function syncNow(opts){
   setLamp('syncing');
   try{
-    // Only the owner may write. Viewers pull and never push.
+    // Only the admin may write. Everyone else just pulls.
     const isOwner = getRole() === 'owner';
     // Order matters: read the cloud first so deletions made on other devices
     // are applied BEFORE this device pushes, otherwise a stale device would
     // resurrect rows that were deleted elsewhere.
-    const { data, error: selErr } = await supa.from('flights').select('*');
-    if(selErr) throw selErr;
+    const r = await api('/api/flights', { timeoutMs: (opts && opts.timeoutMs) || 20000 });
+    if(!r.ok) throw new Error((r.data && r.data.error) || ('The server returned ' + r.status + '.'));
     const cloud = new Map();
-    (data||[]).forEach(r=>{ if(r && r.id) cloud.set(r.id, r); });
+    ((r.data && r.data.flights) || []).forEach(row=>{ if(row && row.id) cloud.set(row.id, row); });
 
     // 1. Apply deletions made on other devices (soft-deleted rows in the cloud).
     const before = DB.flights.length;
-    DB.flights = DB.flights.filter(f=>{ const r = cloud.get(f.id); return !(r && r.deleted_at); });
+    DB.flights = DB.flights.filter(f=>{ const row = cloud.get(f.id); return !(row && row.deleted_at); });
     const removed = before - DB.flights.length;
 
-    // 2. Push deletions made on this device.
-    const tombIds = new Set(DB.deleted.map(t=>t.id));
-    let deletedPushed = 0;
-    if(isOwner && tombIds.size){
-      const { error: delErr } = await supa.from('flights')
-        .update({ deleted_at: new Date().toISOString() })
-        .in('id', [...tombIds]);
-      if(delErr) throw delErr;
-      deletedPushed = tombIds.size;
-      DB.deleted = [];
-      saveData();
-    }
+    // 2. Local deletions waiting to be sent.
+    const tombIds = new Set(isOwner ? DB.deleted.map(t=>t.id) : []);
 
     // 3. Pull new rows and newer versions of existing rows.
     const indexById = new Map(DB.flights.map((f,i)=>[f.id,i]));
     let pulled = 0, updated = 0;
-    cloud.forEach((r,id)=>{
-      if(r.deleted_at || tombIds.has(id)) return;
-      const remote = fromRow(r);
+    cloud.forEach((row,id)=>{
+      if(row.deleted_at || tombIds.has(id)) return;
+      const remote = fromRow(row);
       if(!remote) return;
       if(!indexById.has(id)){
         DB.flights.push(remote);
@@ -129,16 +101,32 @@ async function syncNow(){
         }
       }
     });
+    if(pulled || updated || removed) dataVersion++;
 
-    // 4. Push only rows that are missing from the cloud or newer locally.
+    // 4. Send only what is missing from the cloud or newer here, in one request.
     const toPush = !isOwner ? [] : DB.flights.filter(f=>{
-      const r = cloud.get(f.id);
-      return !r || ts(f.updatedAt) > ts(r.updated_at);
+      const row = cloud.get(f.id);
+      return !row || ts(f.updatedAt) > ts(row.updated_at);
     });
     toPush.forEach(f=>{ if(!f.updatedAt) f.updatedAt = new Date().toISOString(); });
-    if(toPush.length){
-      const { error: upErr } = await supa.from('flights').upsert(toPush.map(toRow), { onConflict:'id' });
-      if(upErr) throw upErr;
+    let deletedPushed = 0;
+    if(isOwner && (toPush.length || tombIds.size)){
+      const w = await api('/api/flights', {
+        method: 'POST',
+        body: JSON.stringify({ upserts: toPush.map(toRow), softDeletes: [...tombIds] }),
+        timeoutMs: 30000
+      });
+      if(w.status === 401){
+        // the login expired: fall back to read-only
+        writeAuthCache(null);
+        applyAuth(null);
+        saveData();
+        setLamp('error');
+        return { ok:false, loggedOut:true, msg:'Your admin login expired. Log in again to save changes.' };
+      }
+      if(!w.ok) throw new Error((w.data && w.data.error) || ('The server returned ' + w.status + '.'));
+      deletedPushed = tombIds.size;
+      DB.deleted = [];
     }
 
     saveData();
@@ -150,7 +138,8 @@ async function syncNow(){
     return { ok:true, msg:`Synced: ${parts.join(', ')}. Total: ${DB.flights.length} flights.` };
   }catch(err){
     setLamp('error');
-    return { ok:false, msg:'Sync failed: ' + describeError(err) };
+    const offline = err && (err.name === 'AbortError' || err.name === 'TypeError');
+    return { ok:false, msg: offline ? 'Sync failed: cannot reach the server. Check your connection.' : 'Sync failed: ' + describeError(err) };
   }
 }
 
@@ -255,132 +244,113 @@ const TAB_NAMES = { dashboard:'Dashboard', sva:'Southwest Virtual', add:'Log fli
 const OWNER_ONLY_TABS = ['add','data'];
 
 /* ===================== AUTH =====================
-   Supabase Auth (email and password) is the real gate. The owner account is
-   marked with app_metadata.role = 'owner' (set once in SQL, and users cannot
-   edit it). Any other signed-in account is a viewer: read-only.
-   The last known identity is cached so the app still opens offline; that cache
-   only controls what the screen shows. The database enforces the real rules. */
+   Everyone can view. A Log in button (top right) gives the admin access to
+   Log flight and Data. The server checks a signed, expiring cookie on every
+   write, so what this screen shows is only a convenience.
+   The last admin login is remembered on this device so the page still opens
+   with edit tabs when offline. */
 const AUTH_CACHE_KEY = 'flightlog_auth_cache';
-let authState = null; // { email, role: 'owner' | 'viewer', offline } or null when signed out
+const PENDING_LOGOUT_KEY = 'flightlog_pending_logout';
+let authState = { role:'viewer', username:'', offline:false };
 
-function getRole(){ return authState ? authState.role : null; }
+function getRole(){ return authState.role; } // 'owner' (logged in as admin) or 'viewer'
 
-function roleFromUser(user){
-  return user && user.app_metadata && user.app_metadata.role === 'owner' ? 'owner' : 'viewer';
-}
 function readAuthCache(){
   try{
     const c = JSON.parse(localStorage.getItem(AUTH_CACHE_KEY) || 'null');
-    return c && (c.role === 'owner' || c.role === 'viewer') ? c : null;
+    return c && c.role === 'owner' ? c : null;
   }catch(e){ return null; }
 }
 function writeAuthCache(state){
   try{
-    if(state) localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify({ email: state.email, role: state.role }));
+    if(state && state.role === 'owner') localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify({ role:'owner', username: state.username || '' }));
     else localStorage.removeItem(AUTH_CACHE_KEY);
   }catch(e){}
 }
 function applyAuth(state){
-  authState = state;
-  document.body.dataset.auth = state ? state.role : 'out';
+  authState = state && state.role === 'owner'
+    ? { role:'owner', username: state.username || '', offline: !!state.offline }
+    : { role:'viewer', username:'', offline:false };
+  document.body.dataset.auth = authState.role;
   const btn = document.getElementById('lockBtn');
-  if(btn && state){
-    const who = state.email ? 'Signed in as ' + state.email + '. ' : '';
-    btn.title = who + 'Sign out';
+  if(btn){
+    const owner = authState.role === 'owner';
+    const label = owner ? 'Log out' : 'Log in';
+    const text = btn.querySelector('.lock-text');
+    if(text) text.textContent = label;
+    btn.setAttribute('aria-label', label);
+    btn.title = owner
+      ? (authState.username ? 'Logged in as ' + authState.username + '. Log out' : 'Log out')
+      : 'Log in as admin to add or change flights';
   }
 }
-function isOfflineError(e){
-  return !!e && (e.name === 'AuthRetryableFetchError' || /fetch|network|timed? ?out|offline/i.test(e.message || ''));
+function isNetworkError(e){
+  return !!e && (e.name === 'AbortError' || e.name === 'TypeError' || /fetch|network|failed|abort/i.test(e.message || ''));
 }
 
+// Checks the cookie with the server. Unreachable server: keep what is remembered.
 async function initAuth(){
-  const cached = readAuthCache();
-  const offlineState = cached ? { ...cached, offline: true } : null;
-  if(!supa){ applyAuth(offlineState); return; }
-  if(!initAuth._listening){
-    initAuth._listening = true;
-    // runs when the session ends (sign out, or the refresh token was rejected)
-    supa.auth.onAuthStateChange(event=>{
-      if(event === 'SIGNED_OUT' && authState && !authState.offline){
-        writeAuthCache(null);
-        applyAuth(null);
-        route('dashboard');
-      }
-    });
-  }
   try{
-    const r = await Promise.race([
-      supa.auth.getSession(),
-      new Promise(resolve=> setTimeout(()=> resolve({ timedOut:true }), 4000))
-    ]);
-    if(r.timedOut || (r.error && isOfflineError(r.error))){ applyAuth(offlineState); return; }
-    const session = r.data && r.data.session;
-    if(session){
-      const state = { email: session.user.email, role: roleFromUser(session.user), offline:false };
-      writeAuthCache(state);
-      applyAuth(state);
-    }else{
+    if(localStorage.getItem(PENDING_LOGOUT_KEY)){
+      const out = await api('/api/logout', { method:'POST', timeoutMs:4000 });
+      if(out.ok) localStorage.removeItem(PENDING_LOGOUT_KEY);
+    }
+    const r = await api('/api/session', { timeoutMs:4000 });
+    if(r.ok && r.data && r.data.admin){
+      const st = { role:'owner', username: r.data.username || '', offline:false };
+      writeAuthCache(st);
+      applyAuth(st);
+    }else if(r.ok){
       writeAuthCache(null);
       applyAuth(null);
     }
   }catch(e){
-    applyAuth(isOfflineError(e) ? offlineState : null);
+    if(!isNetworkError(e)) console.error('Session check failed:', e);
   }
 }
 
-async function signIn(email, password){
-  if(!supa) return { ok:false, msg:'Sign-in needs the cloud library, which did not load. Check that the vendor folder was uploaded with the site.' };
+async function logIn(username, password){
   try{
-    const { data, error } = await supa.auth.signInWithPassword({ email, password });
-    if(error){
-      if(isOfflineError(error)) return { ok:false, msg:'Cannot reach the server. Check your connection and try again.' };
-      if(/invalid login/i.test(error.message || '')) return { ok:false, msg:'That email and password do not match.' };
-      return { ok:false, msg: error.message || 'Sign-in failed.' };
+    const r = await api('/api/login', { method:'POST', body: JSON.stringify({ username, password }), timeoutMs:12000 });
+    if(r.ok){
+      const st = { role:'owner', username: (r.data && r.data.username) || username, offline:false };
+      try{ localStorage.removeItem(PENDING_LOGOUT_KEY); }catch(e){}
+      writeAuthCache(st);
+      applyAuth(st);
+      return { ok:true };
     }
-    const state = { email: data.user.email, role: roleFromUser(data.user), offline:false };
-    writeAuthCache(state);
-    applyAuth(state);
-    return { ok:true };
+    return { ok:false, msg: (r.data && r.data.error) || ('Login failed (' + r.status + ').') };
   }catch(e){
-    return { ok:false, msg: isOfflineError(e) ? 'Cannot reach the server. Check your connection and try again.' : describeError(e) };
+    return { ok:false, msg: isNetworkError(e) ? 'Cannot reach the server. Check your connection and try again.' : describeError(e) };
   }
 }
 
-function clearStoredSession(){
-  // supabase-js keeps its session under sb-<project>-auth-token
-  try{
-    Object.keys(localStorage).filter(k=> /^sb-.*-auth-token/.test(k)).forEach(k=> localStorage.removeItem(k));
-  }catch(e){}
-}
-
-async function signOut(){
-  try{
-    if(supa){
-      const { error } = await supa.auth.signOut();
-      if(error) clearStoredSession(); // e.g. offline: the server call failed, so clear it here
-    }else{
-      clearStoredSession();
-    }
-  }catch(e){ clearStoredSession(); }
+async function logOut(){
+  let reached = true;
+  try{ const r = await api('/api/logout', { method:'POST', timeoutMs:6000 }); reached = r.ok; }
+  catch(e){ reached = false; }
+  // offline: the cookie cannot be cleared from here, so finish the job next time
+  if(!reached){ try{ localStorage.setItem(PENDING_LOGOUT_KEY, '1'); }catch(e){} }
   writeAuthCache(null);
   applyAuth(null);
   route('dashboard');
-  flashStatus('Signed out');
+  flashStatus(reached ? 'Logged out' : 'Logged out on this device. The session ends fully the next time you are online.');
 }
 
 function route(name){
   const role = getRole();
-  if(role && OWNER_ONLY_TABS.includes(name) && role !== 'owner') name = 'dashboard';
+  if(name === 'login' && role === 'owner') name = 'dashboard';
+  if(name !== 'login' && OWNER_ONLY_TABS.includes(name) && role !== 'owner') name = 'dashboard';
 
   tabs.forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
   Object.values(charts).forEach(c=>c && c.destroy());
   charts = {};
   view.innerHTML = '';
 
-  if(!role){
+  if(name === 'login'){
     view.appendChild(document.getElementById('tpl-signin').content.cloneNode(true));
     renderSignIn();
-    document.getElementById('statusLeft').textContent = 'Signed out';
+    document.getElementById('statusLeft').textContent = 'Admin login';
     document.getElementById('statusRight').textContent = new Date().toISOString().slice(0,10);
     return;
   }
@@ -392,34 +362,35 @@ function route(name){
   if(name==='add') renderAddForm();
   if(name==='logbook') renderLogbook();
   if(name==='data') renderData();
-  const roleTag = role === 'viewer' ? ' (view only)' : (authState.offline ? ' (offline)' : '');
+  const roleTag = role === 'owner' && authState.offline ? ' (offline)' : '';
   document.getElementById('statusLeft').textContent = TAB_NAMES[name] + ': ' + DB.flights.length + ' flights logged' + roleTag;
   document.getElementById('statusRight').textContent = new Date().toISOString().slice(0,10);
 }
 
 function renderSignIn(){
   const form = document.getElementById('signinForm');
-  const email = document.getElementById('si-email');
+  const user = document.getElementById('si-user');
   const pass = document.getElementById('si-pass');
   const msg = document.getElementById('signinMsg');
   const btn = document.getElementById('signinBtn');
   const card = form.closest('.signin-card') || form;
 
+  document.getElementById('signinCancel').addEventListener('click', ()=> route('dashboard'));
   form.addEventListener('submit', async e=>{
     e.preventDefault();
     msg.textContent = '';
     msg.classList.remove('error-text');
-    if(!email.value.trim() || !pass.value){
-      msg.textContent = 'Enter your email and password.';
+    if(!user.value.trim() || !pass.value){
+      msg.textContent = 'Enter your username and password.';
       msg.classList.add('error-text');
       return;
     }
     btn.disabled = true;
-    btn.textContent = 'Signing in...';
-    const res = await signIn(email.value.trim(), pass.value);
+    btn.textContent = 'Logging in...';
+    const res = await logIn(user.value.trim(), pass.value);
     if(!res.ok){
       btn.disabled = false;
-      btn.textContent = 'Sign in';
+      btn.textContent = 'Log in';
       msg.textContent = res.msg;
       msg.classList.add('error-text');
       card.classList.add('shake');
@@ -428,10 +399,10 @@ function renderSignIn(){
       pass.focus();
       return;
     }
-    await pullAfterSignIn();
+    await pullOnLoad();
     route('dashboard');
   });
-  email.focus();
+  user.focus();
 }
 
 /* ===================== RENDER HELPERS ===================== */
@@ -1010,45 +981,9 @@ function renderData(){
   });
 
   const pill = document.getElementById('syncPill');
-  const setup = document.getElementById('cloudSetup');
-  const connected = document.getElementById('cloudConnected');
   const syncStatusEl = document.getElementById('syncStatus');
-
-  function refreshCloudUI(){
-    const usingDefaults = !localStorage.getItem(CLOUD_KEY) && !!supa;
-    if(supa){
-      setup.classList.add('hidden');
-      connected.classList.remove('hidden');
-      pill.textContent = usingDefaults ? 'Connected (built in)' : 'Connected';
-      pill.className = 'sync-pill online';
-    }else{
-      setup.classList.remove('hidden');
-      connected.classList.add('hidden');
-      pill.textContent = 'Disconnected';
-      pill.className = 'sync-pill';
-    }
-  }
-  refreshCloudUI();
-
-  document.getElementById('connectCloud').addEventListener('click', ()=>{
-    const url = document.getElementById('c-url').value.trim();
-    const key = document.getElementById('c-key').value.trim();
-    if(!url || !key){ alert('Enter both the project URL and anon key.'); return; }
-    if(!window.supabase){ alert('Supabase library failed to load — check your connection and try again.'); return; }
-    cloudCfg = { url, key };
-    localStorage.setItem(CLOUD_KEY, JSON.stringify(cloudCfg));
-    initCloud();
-    refreshCloudUI();
-    syncStatusEl.textContent = 'Connected. Tap SYNC NOW to push/pull data.';
-  });
-
-  document.getElementById('disconnectCloud')?.addEventListener('click', ()=>{
-    cloudCfg = null;
-    supa = null;
-    localStorage.removeItem(CLOUD_KEY);
-    setLamp('offline');
-    refreshCloudUI();
-  });
+  pill.textContent = authState.offline ? 'Offline' : 'Ready';
+  pill.className = 'sync-pill' + (authState.offline ? '' : ' online');
 
   document.getElementById('syncNow')?.addEventListener('click', async (e)=>{
     const btn = e.currentTarget;
@@ -1059,8 +994,13 @@ function renderData(){
     syncStatusEl.style.color = '';
     try{
       const res = await syncNow();
+      if(res.loggedOut){
+        flashStatus(res.msg);
+        route('dashboard');
+        return;
+      }
       syncStatusEl.textContent = res.msg;
-      syncStatusEl.style.color = res.ok ? '' : 'var(--red)';
+      syncStatusEl.style.color = res.ok ? '' : 'var(--rose)';
       if(res.ok){
         flashStatus('Cloud sync complete: ' + DB.flights.length + ' flights');
         const activeTab = document.querySelector('.tab.active');
@@ -1070,7 +1010,7 @@ function renderData(){
       // catches anything syncNow's own try/catch didn't (e.g. a throw before it could build its result object)
       console.error('Sync button error:', err);
       syncStatusEl.textContent = 'Sync failed unexpectedly: ' + describeError(err);
-      syncStatusEl.style.color = 'var(--red)';
+      syncStatusEl.style.color = 'var(--rose)';
     }finally{
       btn.disabled = false;
       btn.textContent = originalLabel;
@@ -1324,7 +1264,9 @@ function handleRestore(e){
   reader.readAsText(file);
 }
 
-document.getElementById('lockBtn').addEventListener('click', signOut);
+document.getElementById('lockBtn').addEventListener('click', ()=>{
+  if(getRole() === 'owner') logOut(); else route('login');
+});
 
 const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -1347,43 +1289,34 @@ tickClock();
 setInterval(tickClock, 1000);
 
 /* ===================== INIT ===================== */
-// Viewers always pull so they see current data. The owner pulls only when this
-// device has nothing yet, and syncs by hand after that.
-async function pullAfterSignIn(){
-  if(!supa || !authState || authState.offline) return;
-  if(authState.role === 'owner' && DB.flights.length > 0) return;
-  const statusEl = document.getElementById('statusLeft');
-  if(statusEl) statusEl.textContent = 'Pulling from the cloud...';
-  // race the sync against a 6-second timeout so a slow or offline Supabase never freezes the page
-  const timeout = new Promise(resolve => setTimeout(()=> resolve({ok:false, msg:'Cloud timed out. Load the page again when connected, or restore a JSON backup.'}), 6000));
-  const res = await Promise.race([syncNow(), timeout]);
-  if(!res.ok){
-    if(statusEl) statusEl.textContent = 'Cloud pull failed: ' + res.msg;
-  }else if(DB.flights.length > 0){
-    if(statusEl) statusEl.textContent = 'Loaded ' + DB.flights.length + ' flights from the cloud';
-  }
-}
-
 function currentTab(){
   const t = document.querySelector('.tab.active');
   return t ? t.dataset.tab : 'dashboard';
 }
 
+// Visitors always pull so they see current data. The admin pulls only when
+// this device has nothing yet, and syncs by hand after that.
+async function pullOnLoad(){
+  if(getRole() === 'owner' && (authState.offline || DB.flights.length > 0)) return;
+  const statusEl = document.getElementById('statusLeft');
+  if(statusEl) statusEl.textContent = 'Loading flights from the cloud...';
+  const res = await syncNow({ timeoutMs: 8000 });
+  if(!res.ok && statusEl) statusEl.textContent = 'Could not load from the cloud: ' + res.msg;
+}
+
 initCloud();
 
-// If this device remembers a sign-in, open straight away and check it in the
-// background, so a slow or missing connection never leaves a blank page.
-const rememberedSignIn = readAuthCache();
-if(rememberedSignIn){
-  applyAuth({ ...rememberedSignIn, offline:true });
-  route('dashboard');
-}
-const stateKey = ()=> authState ? authState.role + (authState.offline ? '~' : '') : 'out';
+// Open straight away from whatever this device already has, then check the
+// login and refresh in the background, so a slow connection never leaves a blank page.
+const rememberedLogin = readAuthCache();
+applyAuth(rememberedLogin ? { role:'owner', username: rememberedLogin.username, offline:true } : null);
+route('dashboard');
+const stateKey = ()=> authState.role + (authState.offline ? '~' : '');
 const keyBefore = stateKey();
-const flightsBefore = DB.flights.length;
+const versionBefore = dataVersion;
 
 initAuth()
-  .then(pullAfterSignIn)
+  .then(pullOnLoad)
   .catch(err => {
     console.error('Startup error:', err);
     const statusEl = document.getElementById('statusLeft');
@@ -1391,7 +1324,5 @@ initAuth()
   })
   .finally(() => {
     // Redraw only if something changed, so a form being filled in is not wiped.
-    if(!rememberedSignIn || stateKey() !== keyBefore || DB.flights.length !== flightsBefore){
-      route(rememberedSignIn && getRole() ? currentTab() : 'dashboard');
-    }
+    if(stateKey() !== keyBefore || dataVersion !== versionBefore) route(currentTab());
   });

@@ -508,13 +508,13 @@ input[type=file]{padding:9px 10px;color:var(--dim);}
 .signin-card label{margin-bottom:14px;}
 .signin-card #signinMsg{margin:0 0 6px;min-height:0;}
 .signin-card .form-actions{margin-top:6px;}
-.signin-card .btn-primary{width:100%;}
+.signin-card .form-actions .btn-primary{flex:1;}
 
 /* what each kind of visitor can see */
-[data-auth="out"] .tabs,
-[data-auth="out"] .lock-btn{display:none;}
 [data-auth="viewer"] .tab[data-tab="add"],
 [data-auth="viewer"] .tab[data-tab="data"]{display:none;}
+[data-auth="viewer"] .ico-out{display:none;}
+[data-auth="owner"] .ico-in{display:none;}
 .error-text{color:var(--rose) !important;}
 @keyframes shake{
   0%,100%{transform:translateX(0);}
@@ -595,7 +595,6 @@ input[type=file]{padding:9px 10px;color:var(--dim);}
   .m-name{font-size:1.3rem;}
   .spread-key{grid-template-columns:repeat(2,minmax(0,1fr));}
   .shell{padding-bottom:calc(var(--nav-h) + var(--safe-b));}
-  [data-auth="out"] .shell{padding-bottom:0;}
 
   .hero{gap:22px;padding-bottom:22px;}
   .facts{width:100%;grid-template-columns:repeat(2,1fr);gap:16px 20px;}

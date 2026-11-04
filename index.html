@@ -11,7 +11,7 @@
 <link rel="alternate icon" href="favicon.svg">
 <link rel="stylesheet" href="style.css">
 </head>
-<body data-auth="out">
+<body data-auth="viewer">
 
 <div class="shell">
 
@@ -49,9 +49,10 @@
         <span class="utc-time"><span id="utcTime"></span><span class="utc-label">UTC</span></span>
         <span class="utc-date" id="utcDate"></span>
       </div>
-      <button class="lock-btn" id="lockBtn" type="button" title="Sign out" aria-label="Sign out">
-        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/></svg>
-        <span class="lock-text">Sign out</span>
+      <button class="lock-btn" id="lockBtn" type="button" title="Log in as admin to add or change flights" aria-label="Log in">
+        <svg class="ico ico-in" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/></svg>
+        <svg class="ico ico-out" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+        <span class="lock-text">Log in</span>
       </button>
     </div>
   </header>
@@ -155,17 +156,18 @@
 <template id="tpl-signin">
   <section class="form-wrap">
     <form class="panel signin-card" id="signinForm" novalidate>
-      <h3 class="lock-title">Sign in</h3>
-      <p class="hint">Use the account you were given for this logbook.</p>
-      <label>Email
-        <input id="si-email" type="email" autocomplete="username" inputmode="email" autocapitalize="none" spellcheck="false">
+      <h3 class="lock-title">Admin login</h3>
+      <p class="hint">Log in to add or change flights. Everyone else can view the logbook without logging in.</p>
+      <label>Username
+        <input id="si-user" autocomplete="username" autocapitalize="none" spellcheck="false">
       </label>
       <label>Password
         <input id="si-pass" type="password" autocomplete="current-password">
       </label>
       <p class="hint" id="signinMsg" aria-live="polite"></p>
       <div class="form-actions">
-        <button class="btn-primary" id="signinBtn" type="submit">Sign in</button>
+        <button class="btn-primary" id="signinBtn" type="submit">Log in</button>
+        <button class="btn-ghost" id="signinCancel" type="button">Cancel</button>
       </div>
     </form>
   </section>
@@ -282,28 +284,14 @@
   <section class="page narrow">
     <section class="panel">
       <header class="panel-head row-between">
-        <div><h3>Cloud sync</h3><p>Supabase</p></div>
-        <span class="sync-pill" id="syncPill">Disconnected</span>
+        <div><h3>Cloud sync</h3><p>Saves this logbook online and loads it on other devices</p></div>
+        <span class="sync-pill" id="syncPill">Ready</span>
       </header>
-      <p class="hint" id="cloudIntro">Connect a free Supabase project to back this logbook up to the cloud. Until you connect, everything stays on this device. JSON export and import below always work offline.</p>
-
-      <div id="cloudSetup">
-        <div class="grid-2">
-          <label>Project URL <input id="c-url" placeholder="https://xxxx.supabase.co"></label>
-          <label>Anon key <input id="c-key" placeholder="eyJ..."></label>
-        </div>
-        <div class="form-actions">
-          <button class="btn-primary" id="connectCloud">Connect</button>
-        </div>
+      <p class="hint">Anyone can view the logbook without logging in. Only you can save changes, and only while logged in as admin.</p>
+      <div class="form-actions">
+        <button class="btn-primary" id="syncNow" type="button">Sync now</button>
       </div>
-
-      <div id="cloudConnected" class="hidden">
-        <div class="form-actions">
-          <button class="btn-primary" id="syncNow">Sync now</button>
-          <button class="btn-ghost" id="disconnectCloud">Disconnect</button>
-        </div>
-        <p class="hint" id="syncStatus"></p>
-      </div>
+      <p class="hint" id="syncStatus"></p>
     </section>
 
     <section class="panel">
@@ -328,7 +316,6 @@
   </section>
 </template>
 
-<script src="vendor/supabase.js"></script>
 <script src="vendor/chart.umd.js"></script>
 <script src="vendor/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
