@@ -546,7 +546,7 @@ function chartsReady(canvasId){
   if(window.Chart){
     const P = palette();
     Chart.defaults.font.family = getCss('--sans');
-    Chart.defaults.font.size = 12;
+    Chart.defaults.font.size = Math.round(12 * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16) / 16);
     Chart.defaults.color = P.dim;
     Chart.defaults.borderColor = P.line;
     return true;
