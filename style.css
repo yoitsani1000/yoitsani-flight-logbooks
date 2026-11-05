@@ -36,9 +36,6 @@
 
 *{box-sizing:border-box;}
 html{-webkit-text-size-adjust:100%;font-size:100%;}
-/* Large monitors: scale the whole interface (everything sized in rem) so it
-   fills the screen instead of sitting small in the middle. */
-@media (min-width:1500px){html{font-size:clamp(16px, calc(0.5vw + 7.5px), 26px);}}
 body{
   margin:0;
   background:var(--bg);
@@ -176,7 +173,6 @@ main{flex:1;padding:28px clamp(24px, 3vw, 72px) 40px;}
 .hobbs-unit{font-size:0.82rem;color:var(--dim);}
 .hobbs{display:inline-flex;align-items:center;gap:3px;align-self:flex-start;}
 .hobbs{--wheel-h:1.22em;font-size:clamp(2.6rem, 11vw, 5.4rem);}
-@media (min-width:1500px){.hobbs{font-size:clamp(5.4rem, 5vw, 8rem);}}
 .wheel{
   display:inline-block;
   position:relative;
@@ -278,7 +274,6 @@ main{flex:1;padding:28px clamp(24px, 3vw, 72px) 40px;}
   .ledger{grid-template-columns:repeat(6, 1fr);column-gap:36px;}
   .ledger .fact{flex-direction:column;align-items:flex-start;gap:2px;}
   .facts{grid-template-columns:repeat(4, minmax(110px, auto));gap:20px 56px;}
-  .hero{gap:28px 120px;}
 }
 @media (min-width:1500px){
   .sva-grid{grid-template-columns:repeat(12, minmax(0,1fr));}
@@ -291,7 +286,6 @@ main{flex:1;padding:28px clamp(24px, 3vw, 72px) 40px;}
   .sva-grid{grid-template-columns:repeat(12, minmax(0,1fr));}
   .sva-grid > .panel{grid-column:span 3;}
   .sva-grid > .span-2{grid-column:span 6;}
-  .hero{gap:28px 180px;}
 }
 .panel{
   background:var(--surface);
@@ -313,7 +307,7 @@ main{flex:1;padding:28px clamp(24px, 3vw, 72px) 40px;}
 .zoom-tools button.wide{font-size:0.78rem;font-weight:500;}
 .zoom-tools button:hover{color:var(--text);border-color:var(--dim);}
 .chart-box canvas{touch-action:pan-y;}
-.chart-box{position:relative;height:clamp(250px, 26vh, 460px);}
+.chart-box{position:relative;height:clamp(250px, 26vh, 520px);}
 .chart-box.short{height:clamp(190px, 20vh, 340px);}
 .key{
   display:flex;flex-wrap:wrap;gap:8px 18px;
@@ -329,7 +323,7 @@ main{flex:1;padding:28px clamp(24px, 3vw, 72px) 40px;}
 
 /* aircraft pie + legend */
 .pie-wrap{display:flex;align-items:center;gap:28px;}
-.pie-box{position:relative;width:min(210px, 44%);flex-shrink:0;}
+.pie-box{position:relative;width:min(clamp(210px, 13vw, 360px), 44%);flex-shrink:0;}
 .chart-legend{display:grid;gap:9px;flex:1;min-width:0;max-width:280px;}
 .legend-item{
   display:grid;
