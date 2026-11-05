@@ -426,15 +426,30 @@ function fact(label, value, unit='', cls=''){
   return `<div class="fact ${cls}"><dt>${esc(label)}</dt><dd>${value}${unit ? `<small>${esc(unit)}</small>` : ''}</dd></div>`;
 }
 
-// Total time as a mechanical Hobbs meter: four white-on-black wheels, then a tenths wheel.
+// Total time as a mechanical Hobbs meter. Each wheel is a tall reel of digits
+// that rolls to its final value; the left wheels turn fewer times than the right.
+const HOBBS_LOOPS = [0, 1, 2, 2, 3];
 function renderHobbs(elId, hours){
   const el = document.getElementById(elId);
   if(!el) return;
   const [whole, tenth] = (hours || 0).toFixed(1).split('.');
+  const digits = [...whole.padStart(4, '0').split(''), tenth];
   el.setAttribute('aria-label', `${fmt(hours || 0, 1)} hours`);
-  el.innerHTML = whole.padStart(4, '0').split('').map(d=>`<span class="wheel">${d}</span>`).join('')
-    + '<span class="hobbs-point"></span>'
-    + `<span class="wheel tenth">${tenth}</span>`;
+  const reel = () => '<span class="reel" aria-hidden="true">' + Array.from({length:40}, (_,i)=>`<span>${i%10}</span>`).join('') + '</span>';
+  el.innerHTML = digits.map((d,i)=>
+      (i===4 ? '<span class="hobbs-point"></span>' : '')
+      + `<span class="wheel${i===4 ? ' tenth' : ''}" aria-hidden="true">${reel()}</span>`
+    ).join('');
+  const reels = el.querySelectorAll('.reel');
+  const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const go = () => reels.forEach((r,i)=>{
+    const target = HOBBS_LOOPS[i] * 10 + (+digits[i]);
+    r.style.transitionDelay = (i * 90) + 'ms';
+    r.style.transform = `translateY(calc(var(--wheel-h) * -${target}))`;
+  });
+  if(reduce){ reels.forEach(r=> r.style.transition = 'none'); go(); return; }
+  void el.offsetWidth;                     // commit the starting position first
+  requestAnimationFrame(()=> requestAnimationFrame(go));
 }
 
 function landingFacts(s){
@@ -556,6 +571,37 @@ function sortedByDate(list){
   return [...list].sort((a,b)=> (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
+/* ---------- zoom ----------
+   Ctrl/Cmd + scroll (or a trackpad pinch) and touch pinch zoom, drag pans,
+   and each chart gets +, - and reset buttons. Plain scrolling is left alone so
+   the page can still scroll past a chart. */
+function zoomOptions(mode, minRange){
+  return {
+    pan:{ enabled:true, mode },
+    zoom:{ wheel:{ enabled:true, modifierKey:'ctrl' }, pinch:{ enabled:true }, mode },
+    limits:{ x:{ min:'original', max:'original', minRange }, ...(mode==='xy' ? { y:{ min:'original', max:'original' } } : {}) }
+  };
+}
+function addZoomControls(canvasId){
+  const chart = charts[canvasId];
+  const ctx = document.getElementById(canvasId);
+  const panel = ctx && ctx.closest('.panel');
+  if(!chart || !panel || panel.querySelector('.zoom-tools')) return;
+  const bar = document.createElement('div');
+  bar.className = 'zoom-tools';
+  bar.innerHTML = '<button type="button" data-z="in" aria-label="Zoom in" title="Zoom in">+</button>'
+    + '<button type="button" data-z="out" aria-label="Zoom out" title="Zoom out">\u2212</button>'
+    + '<button type="button" data-z="reset" class="wide" title="Reset zoom">Reset</button>';
+  bar.addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    if(b.dataset.z === 'in') chart.zoom(1.5);
+    else if(b.dataset.z === 'out') chart.zoom(1/1.5);
+    else chart.resetZoom();
+  });
+  panel.classList.add('has-zoom');
+  panel.appendChild(bar);
+}
+
 function buildScatter(canvasId, list, key, unitLabel){
   const ctx = document.getElementById(canvasId);
   if(!ctx || !chartsReady(canvasId)) return;
@@ -594,16 +640,17 @@ function buildScatter(canvasId, list, key, unitLabel){
     }]},
     options:{
       responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{display:false}, tooltip:{ ...tooltipBase(P), callbacks:{
+      plugins:{ legend:{display:false}, zoom: zoomOptions('xy', 7*864e5), tooltip:{ ...tooltipBase(P), callbacks:{
         title: dateTitle,
         label: (c)=> `${c.parsed.y} ${unitLabel}`
       }}},
       scales:{
-        x:{ type:'time', time:{unit:'month'}, ticks:{maxTicksLimit:6, maxRotation:0}, grid:{display:false}, border:{color:P.line} },
+        x:{ type:'time', ticks:{maxTicksLimit:6, maxRotation:0}, grid:{display:false}, border:{color:P.line} },
         y:{ grid:{color:P.line}, border:{display:false}, ticks:{maxTicksLimit:6} }
       }
     }
   });
+  addZoomControls(canvasId);
 }
 
 function buildHoursBar(canvasId, list){
@@ -621,10 +668,11 @@ function buildHoursBar(canvasId, list){
     data:{ labels:keys.map(k=>`${MON3[+k.slice(5,7)-1]} ${k.slice(0,4)}`),
            datasets:[{ data:keys.map(k=>+map[k].toFixed(1)), backgroundColor:P.steel, hoverBackgroundColor:P.accent, borderRadius:2, maxBarThickness:28 }]},
     options:{ responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{display:false}, tooltip:{ ...tooltipBase(P), callbacks:{ label:(c)=> `${c.parsed.y} hours` } } },
+      plugins:{ legend:{display:false}, zoom: zoomOptions('x', 2), tooltip:{ ...tooltipBase(P), callbacks:{ label:(c)=> `${c.parsed.y} hours` } } },
       scales:{ x:{ grid:{display:false}, border:{color:P.line}, ticks:{maxTicksLimit:8, maxRotation:0} },
                y:{ grid:{color:P.line}, border:{display:false}, ticks:{maxTicksLimit:5} } } }
   });
+  addZoomControls(canvasId);
 }
 
 function buildAircraftChart(canvasId, list){
@@ -743,10 +791,11 @@ function renderSVA(){
       type:'line',
       data:{ datasets:[{ data:points, borderColor:P.sky, backgroundColor:P.sky + '1f', fill:true, pointRadius:0, pointHoverRadius:4, borderWidth:2, tension:0.1 }]},
       options:{ responsive:true, maintainAspectRatio:false,
-        plugins:{ legend:{display:false}, tooltip:{ ...tooltipBase(P), callbacks:{ title:dateTitle, label:(c)=> `${c.parsed.y} TFP hours` } } },
-        scales:{ x:{ type:'time', time:{unit:'month'}, grid:{display:false}, border:{color:P.line}, ticks:{maxTicksLimit:6, maxRotation:0} },
+        plugins:{ legend:{display:false}, zoom: zoomOptions('x', 7*864e5), tooltip:{ ...tooltipBase(P), callbacks:{ title:dateTitle, label:(c)=> `${c.parsed.y} TFP hours` } } },
+        scales:{ x:{ type:'time', grid:{display:false}, border:{color:P.line}, ticks:{maxTicksLimit:6, maxRotation:0} },
                  y:{ grid:{color:P.line}, border:{display:false}, ticks:{maxTicksLimit:6} } } }
     });
+    addZoomControls('chartTFP');
   }
 
   renderAirportBars('svaAirportTable', airportCounts(list), 8);
@@ -767,7 +816,14 @@ function renderAddForm(){
 
   const svaCb = document.getElementById('f-issva');
   const svaFields = document.getElementById('svaFields');
-  svaCb.addEventListener('change', ()=> svaFields.classList.toggle('hidden', !svaCb.checked));
+  const tfpField = document.getElementById('tfpField');
+  const timeGrid = document.getElementById('timeGrid');
+  function syncSvaUi(){
+    svaFields.classList.toggle('hidden', !svaCb.checked);
+    tfpField.classList.toggle('hidden', !svaCb.checked);
+    timeGrid.classList.toggle('three', svaCb.checked);
+  }
+  svaCb.addEventListener('change', syncSvaUi);
 
   const lastRank = localStorage.getItem('flightlog_last_rank');
   if(lastRank) document.getElementById('f-rank').value = lastRank;
@@ -804,7 +860,7 @@ function renderAddForm(){
     saveData();
     document.getElementById('flightForm').reset();
     sharedFields.classList.add('hidden');
-    svaFields.classList.add('hidden');
+    syncSvaUi();
     document.getElementById('f-date').valueAsDate = new Date();
     flashStatus('Flight saved: ' + flight.dep + ' to ' + flight.arr);
   });
@@ -839,7 +895,7 @@ function stripHtml(f, canDelete, promoted){
   ].join('');
   return `<article class="strip${f.sva ? ' is-sva' : ''}${f.excludeFromAvg ? ' is-excl' : ''}">`
     + `<span class="s-date">${esc(prettyDate(f.date))}</span>`
-    + `<span class="s-route">${esc(f.dep)}<i></i>${esc(f.arr)}</span>`
+    + `<span class="s-route"><b class="dep">${esc(f.dep)}</b><i></i><b class="arr">${esc(f.arr)}</b></span>`
     + `<span class="s-flt">${esc(f.flightNum || '—')}<small>${esc(f.aircraft || '')}${f.sva ? `<span class="tfp">, ${fmt(f.tfp||0,2)} TFP</span>` : ''}</small></span>`
     + `<span class="s-num s-time">${fmt(f.elapsed,1)}<small>hr</small></span>`
     + `<span class="s-num s-rate ${rateClass(f.landingRate)}">${fmt(f.landingRate,0)}<small>fpm</small></span>`
@@ -959,14 +1015,7 @@ function renderLogbook(){
 }
 
 /* ===================== DATA TAB: IMPORT/EXPORT ===================== */
-function excelSerialToISO(serial){
-  if(typeof serial !== 'number') return String(serial).slice(0,10);
-  const ms = Math.round((serial - 25569) * 86400 * 1000);
-  return new Date(ms).toISOString().slice(0,10);
-}
-
 function renderData(){
-  document.getElementById('importFile').addEventListener('change', handleImport);
   document.getElementById('exportJson').addEventListener('click', exportJson);
   document.getElementById('exportCsv').addEventListener('click', exportCsv);
   document.getElementById('exportPdf').addEventListener('click', exportPdf);
@@ -1023,144 +1072,6 @@ function describeError(err){
   if(err.message) return err.message + (err.hint ? ' (' + err.hint + ')' : '') + (err.code ? ' [code ' + err.code + ']' : '');
   if(err.error_description) return err.error_description;
   try{ return JSON.stringify(err); }catch(e){ return String(err); }
-}
-
-function buildRankThresholds(workbook){
-  // Reads a "RANK PROGRESS" style sheet with RANKS + NEEDED LEGS columns.
-  // Returns [{rank, maxLeg}] describing the rank held for legs up to maxLeg
-  // (the rank BEFORE reaching the next threshold).
-  const sheetName = workbook.SheetNames.find(n=>/rank progress/i.test(n));
-  if(!sheetName) return null;
-  const sheet = workbook.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
-  if(!rows.length) return null;
-  const header = rows[0].map(h=>String(h).trim().toUpperCase());
-  const iRank = header.indexOf('RANKS');
-  const iLegs = header.indexOf('NEEDED LEGS');
-  if(iRank<0 || iLegs<0) return null;
-  const nextRankAt = [];
-  for(let r=1; r<rows.length; r++){
-    const row = rows[r];
-    if(!row || !row[iRank]) continue;
-    const legs = parseFloat(row[iLegs]);
-    if(!isNaN(legs)) nextRankAt.push({ rank:String(row[iRank]).trim().toUpperCase(), maxLeg:legs });
-  }
-  if(!nextRankAt.length) return null;
-  const heldRankSequence = ['NEW HIRE', ...nextRankAt.map(t=>t.rank)];
-  return nextRankAt.map((t,i)=>({ rank: heldRankSequence[i], maxLeg: t.maxLeg }));
-}
-function rankForLeg(legNumber, thresholds){
-  for(const t of thresholds){ if(legNumber <= t.maxLeg) return t.rank; }
-  return thresholds.length ? thresholds[thresholds.length-1].rank : '';
-}
-
-function matchKey(dep, arr, date, rate){
-  return dep+'|'+arr+'|'+date+'|'+(Math.round(rate*10)/10).toFixed(1);
-}
-
-function handleImport(e){
-  const file = e.target.files[0];
-  if(!file) return;
-  const statusEl = document.getElementById('importStatus');
-  statusEl.textContent = 'Reading ' + file.name + '...';
-  const reader = new FileReader();
-  reader.onload = (evt)=>{
-    try{
-      const wb = XLSX.read(evt.target.result, {type:'array'});
-      const sheetName = wb.SheetNames.find(n=>/flight sheet/i.test(n)) || wb.SheetNames[0];
-      const sheet = wb.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
-      const header = rows[0].map(h=>String(h).trim().toUpperCase());
-      const idx = (name)=> header.indexOf(name);
-      const iDep=idx('DEP'), iArr=idx('ARR'), iFlt=idx('FLIGHT #'), iDate=idx('DATE'),
-            iElapsed=idx('ELAPSED'), iTfp=idx('TFP'), iRate=idx('LANDING R'), iG=idx('LANDING G'),
-            iAc=idx('AIRCRAFT'), iNotes=idx('NOTES');
-      if(iDep<0 || iArr<0 || iRate<0){
-        statusEl.textContent = 'Could not find the expected columns in "' + sheetName + '". Check the file format.';
-        return;
-      }
-      const isSvaSheet = iTfp>=0;
-      const thresholds = isSvaSheet ? buildRankThresholds(wb) : null;
-
-      // index existing flights by match key so we can merge instead of duplicate
-      const existingByKey = {};
-      DB.flights.forEach(f=>{
-        const k = matchKey(f.dep, f.arr, f.date, f.landingRate);
-        if(!existingByKey[k]) existingByKey[k] = [];
-        existingByKey[k].push(f);
-      });
-
-      let legNumber = 0;
-      let added = 0, merged = 0, skipped = 0;
-      for(let r=1; r<rows.length; r++){
-        const row = rows[r];
-        if(!row || !row[iDep]) continue;
-        legNumber++;
-        const dep = String(row[iDep]||'').trim().toUpperCase();
-        const arr = String(row[iArr]||'').trim().toUpperCase();
-        const date = excelSerialToISO(row[iDate]);
-        const rate = parseFloat(row[iRate]) || 0;
-        const notes = (iNotes>=0 ? String(row[iNotes]||'') : '').trim();
-        const upperNotes = notes.toUpperCase();
-        const role = (upperNotes.match(/P[FM] TO\/P[FM] LDG/)||[''])[0];
-        const tfp = isSvaSheet ? (parseFloat(row[iTfp]) || 0) : null;
-        const rank = isSvaSheet ? (thresholds ? rankForLeg(legNumber, thresholds) : '') : '';
-
-        const key = matchKey(dep, arr, date, rate);
-        const candidates = existingByKey[key];
-        const existing = candidates && candidates.find(f => isSvaSheet ? true : !f._importedThisBatch);
-
-        if(existing){
-          // merge: fill in SVA fields if this is the SVA sheet, fill in general fields if missing
-          if(isSvaSheet && !existing.sva){
-            existing.sva = true;
-            existing.tfp = tfp;
-            existing.rank = rank;
-            existing.updatedAt = new Date().toISOString();
-            merged++;
-          } else if(!isSvaSheet && !existing._importedThisBatch){
-            // re-importing general sheet over an SVA-only stub, or a true duplicate re-import: just skip
-            skipped++;
-          } else {
-            skipped++;
-          }
-          existing._importedThisBatch = true;
-          continue;
-        }
-
-        const flight = {
-          id: uid(),
-          dep, arr,
-          flightNum: String(iFlt>=0 ? row[iFlt] : '').trim().toUpperCase(),
-          date,
-          elapsed: parseFloat(row[iElapsed]) || 0,
-          landingRate: rate,
-          landingG: parseFloat(row[iG]) || 0,
-          aircraft: String(row[iAc]||'').trim().toUpperCase(),
-          notes,
-          sharedCockpit: upperNotes.includes('SHARED COCKPIT'),
-          role,
-          excludeFromAvg: /PM LDG/.test(role),
-          sva: isSvaSheet,
-          tfp,
-          rank,
-          updatedAt: new Date().toISOString(),
-          _importedThisBatch: true
-        };
-        DB.flights.push(flight);
-        if(!existingByKey[key]) existingByKey[key] = [];
-        existingByKey[key].push(flight);
-        added++;
-      }
-      DB.flights.forEach(f=>{ delete f._importedThisBatch; });
-      saveData();
-      const rankNote = isSvaSheet ? (thresholds ? ' Rank assigned from RANK PROGRESS leg thresholds.' : ' No RANK PROGRESS sheet found — rank left blank, set manually if needed.') : '';
-      statusEl.textContent = `Imported ${added} new, merged ${merged} into existing flights, skipped ${skipped} duplicates, from "${sheetName}".` + rankNote;
-    }catch(err){
-      statusEl.textContent = 'Import failed: ' + err.message;
-    }
-  };
-  reader.readAsArrayBuffer(file);
 }
 
 function exportJson(){

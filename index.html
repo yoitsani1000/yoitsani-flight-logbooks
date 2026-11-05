@@ -178,6 +178,18 @@
     <form class="panel form-card" id="flightForm">
       <header class="panel-head"><h3>Log a flight</h3><p>Fill in the flight, then save it to your logbook.</p></header>
 
+      <label class="check sva-toggle"><input type="checkbox" id="f-issva"> Count toward Southwest Virtual</label>
+      <label class="sva-only hidden" id="svaFields">Seniority rank
+        <select id="f-rank">
+          <option value="">Choose a rank</option>
+          <option>NEW HIRE</option>
+          <option>IOE PILOT</option>
+          <option>JUNIOR FIRST OFFICER</option>
+          <option>FIRST OFFICER</option>
+          <option>SENIOR FIRST OFFICER</option>
+        </select>
+      </label>
+
       <h4 class="form-group">Route</h4>
       <div class="grid-2 pair">
         <label>Departure<input required maxlength="4" id="f-dep" placeholder="KHOU" class="upper"></label>
@@ -189,9 +201,10 @@
       </div>
 
       <h4 class="form-group">Time</h4>
-      <div class="grid-2 pair">
+      <div class="grid-2 pair time-grid" id="timeGrid">
         <label>Date<input required type="date" id="f-date"></label>
         <label>Elapsed (hours) <input required type="number" inputmode="decimal" step="0.1" min="0" id="f-elapsed"></label>
+        <label class="tfp-field hidden" id="tfpField">TFP (hours) <input type="number" inputmode="decimal" step="0.01" min="0" id="f-tfp" placeholder="1.0"></label>
       </div>
 
       <h4 class="form-group">Landing</h4>
@@ -217,23 +230,6 @@
         </label>
       </div>
 
-      <hr class="divider">
-
-      <label class="check sva-toggle"><input type="checkbox" id="f-issva"> Count toward Southwest Virtual</label>
-
-      <div class="grid-2 sva-only hidden" id="svaFields">
-        <label>TFP (hours) <input type="number" inputmode="decimal" step="0.01" min="0" id="f-tfp" placeholder="1.0"></label>
-        <label>Seniority rank
-          <select id="f-rank">
-            <option value="">Choose a rank</option>
-            <option>NEW HIRE</option>
-            <option>IOE PILOT</option>
-            <option>JUNIOR FIRST OFFICER</option>
-            <option>FIRST OFFICER</option>
-            <option>SENIOR FIRST OFFICER</option>
-          </select>
-        </label>
-      </div>
 
       <label class="full">Notes <textarea id="f-notes" rows="2" placeholder="Manual report, windshear on final"></textarea></label>
 
@@ -295,13 +291,6 @@
     </section>
 
     <section class="panel">
-      <header class="panel-head"><h3>Import a spreadsheet</h3><p>LOGBOOK.xlsx or SVA_FLIGHT_TRACKER.xlsx</p></header>
-      <p class="hint">Columns are detected automatically (DEP, ARR, FLIGHT #, DATE, ELAPSED, TFP, LANDING R, LANDING G, AIRCRAFT, NOTES). A RANK PROGRESS sheet, if present, sets each flight's seniority rank. Shared cockpit flights are flagged from the notes text, so review them after importing.</p>
-      <input type="file" id="importFile" accept=".xlsx,.xls">
-      <div id="importStatus" class="hint"></div>
-    </section>
-
-    <section class="panel">
       <header class="panel-head"><h3>Backup and export</h3><p>Works offline, separate from cloud sync</p></header>
       <p class="hint">Export a JSON backup regularly, or use it to move your logbook to another device.</p>
       <div class="form-actions">
@@ -318,7 +307,8 @@
 
 <script src="vendor/chart.umd.js"></script>
 <script src="vendor/chartjs-adapter-date-fns.bundle.min.js"></script>
-<script src="vendor/xlsx.full.min.js"></script>
+<script src="vendor/hammer.min.js"></script>
+<script src="vendor/chartjs-plugin-zoom.min.js"></script>
 <script src="vendor/jspdf.umd.min.js"></script>
 <script src="vendor/jspdf.plugin.autotable.min.js"></script>
 <script src="script.js"></script>
