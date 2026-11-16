@@ -802,68 +802,122 @@ function renderSVA(){
 }
 
 /* ===================== ADD FLIGHT FORM ===================== */
-function renderAddForm(){
+/* The add form and the edit dialog share these helpers. Both read the same
+   field ids, so only one of them is ever in the page at a time. */
+function wireFlightForm(){
   const sharedCb = document.getElementById('f-shared');
   const sharedFields = document.getElementById('sharedFields');
   const roleSelect = document.getElementById('f-role');
   const excludeCb = document.getElementById('f-exclude');
-
-  sharedCb.addEventListener('change', ()=> sharedFields.classList.toggle('hidden', !sharedCb.checked));
-  roleSelect.addEventListener('change', ()=>{
-    // auto-set exclude from avg: only PM landings shouldn't count toward personal averages
-    excludeCb.checked = /PM LDG/.test(roleSelect.value);
-  });
-
   const svaCb = document.getElementById('f-issva');
   const svaFields = document.getElementById('svaFields');
   const tfpField = document.getElementById('tfpField');
   const timeGrid = document.getElementById('timeGrid');
-  function syncSvaUi(){
+
+  function syncShared(){ sharedFields.classList.toggle('hidden', !sharedCb.checked); }
+  function syncSva(){
     svaFields.classList.toggle('hidden', !svaCb.checked);
     tfpField.classList.toggle('hidden', !svaCb.checked);
     timeGrid.classList.toggle('three', svaCb.checked);
   }
-  svaCb.addEventListener('change', syncSvaUi);
+  sharedCb.addEventListener('change', syncShared);
+  svaCb.addEventListener('change', syncSva);
+  roleSelect.addEventListener('change', ()=>{
+    // auto-set exclude from avg: only PM landings shouldn't count toward personal averages
+    excludeCb.checked = /PM LDG/.test(roleSelect.value);
+  });
+  return { syncShared, syncSva };
+}
+
+function readFlightForm(){
+  const val = id => document.getElementById(id).value;
+  const shared = document.getElementById('f-shared').checked;
+  const isSva = document.getElementById('f-issva').checked;
+  return {
+    dep: val('f-dep').toUpperCase().trim(),
+    arr: val('f-arr').toUpperCase().trim(),
+    flightNum: val('f-flightnum').toUpperCase().trim(),
+    date: val('f-date'),
+    elapsed: parseFloat(val('f-elapsed')),
+    landingRate: parseFloat(val('f-landingrate')),
+    landingG: parseFloat(val('f-landingg')),
+    aircraft: val('f-aircraft').toUpperCase().trim(),
+    notes: val('f-notes').trim(),
+    sharedCockpit: shared,
+    role: shared ? val('f-role') : '',
+    excludeFromAvg: shared ? document.getElementById('f-exclude').checked : false,
+    sva: isSva,
+    tfp: isSva ? parseFloat(val('f-tfp') || '0') : null,
+    rank: isSva ? val('f-rank') : ''
+  };
+}
+
+function fillFlightForm(f){
+  const set = (id, v) => { document.getElementById(id).value = (v == null ? '' : v); };
+  set('f-dep', f.dep); set('f-arr', f.arr); set('f-flightnum', f.flightNum);
+  set('f-aircraft', f.aircraft); set('f-date', String(f.date || '').slice(0,10));
+  set('f-elapsed', f.elapsed); set('f-landingrate', f.landingRate); set('f-landingg', f.landingG);
+  set('f-notes', f.notes); set('f-role', f.role); set('f-tfp', f.tfp); set('f-rank', f.rank);
+  document.getElementById('f-shared').checked = !!f.sharedCockpit;
+  document.getElementById('f-exclude').checked = !!f.excludeFromAvg;
+  document.getElementById('f-issva').checked = !!f.sva;
+}
+
+function renderAddForm(){
+  const { syncShared, syncSva } = wireFlightForm();
 
   const lastRank = localStorage.getItem('flightlog_last_rank');
   if(lastRank) document.getElementById('f-rank').value = lastRank;
-
   document.getElementById('f-date').valueAsDate = new Date();
 
   document.getElementById('flightForm').addEventListener('submit', e=>{
     e.preventDefault();
-    const shared = sharedCb.checked;
-    const isSva = svaCb.checked;
-    const rank = document.getElementById('f-rank').value;
-    if(rank) localStorage.setItem('flightlog_last_rank', rank);
-
-    const flight = {
-      id: uid(),
-      dep: document.getElementById('f-dep').value.toUpperCase().trim(),
-      arr: document.getElementById('f-arr').value.toUpperCase().trim(),
-      flightNum: document.getElementById('f-flightnum').value.toUpperCase().trim(),
-      date: document.getElementById('f-date').value,
-      elapsed: parseFloat(document.getElementById('f-elapsed').value),
-      landingRate: parseFloat(document.getElementById('f-landingrate').value),
-      landingG: parseFloat(document.getElementById('f-landingg').value),
-      aircraft: document.getElementById('f-aircraft').value.toUpperCase().trim(),
-      notes: document.getElementById('f-notes').value.trim(),
-      sharedCockpit: shared,
-      role: shared ? roleSelect.value : '',
-      excludeFromAvg: shared ? excludeCb.checked : false,
-      sva: isSva,
-      tfp: isSva ? parseFloat(document.getElementById('f-tfp').value || '0') : null,
-      rank: isSva ? rank : '',
-      updatedAt: new Date().toISOString()
-    };
+    const flight = { id: uid(), ...readFlightForm(), updatedAt: new Date().toISOString() };
+    if(flight.rank) localStorage.setItem('flightlog_last_rank', flight.rank);
     DB.flights.push(flight);
     saveData();
     document.getElementById('flightForm').reset();
-    sharedFields.classList.add('hidden');
-    syncSvaUi();
+    syncShared();
+    syncSva();
     document.getElementById('f-date').valueAsDate = new Date();
     flashStatus('Flight saved: ' + flight.dep + ' to ' + flight.arr);
   });
+}
+
+/* Edit a logged flight in a dialog that reuses the Log flight form. */
+function openEditDialog(id, onDone){
+  const flight = DB.flights.find(f=>f.id === id);
+  if(!flight || getRole() !== 'owner') return;
+
+  const dlg = document.createElement('dialog');
+  dlg.className = 'edit-dialog';
+  dlg.appendChild(document.getElementById('tpl-add').content.cloneNode(true));
+  document.body.appendChild(dlg);
+
+  dlg.querySelector('.panel-head h3').textContent = 'Edit flight';
+  dlg.querySelector('.panel-head p').textContent = `${flight.dep} to ${flight.arr}, ${prettyDate(flight.date)}`;
+  const actions = dlg.querySelector('.form-actions');
+  actions.innerHTML = '<button type="submit" class="btn-primary">Save changes</button>'
+                    + '<button type="button" class="btn-ghost" data-cancel>Cancel</button>';
+
+  const { syncShared, syncSva } = wireFlightForm();
+  fillFlightForm(flight);
+  syncShared();
+  syncSva();
+
+  const close = () => { dlg.close(); dlg.remove(); };
+  dlg.addEventListener('cancel', e=>{ e.preventDefault(); close(); });
+  dlg.addEventListener('click', e=>{ if(e.target === dlg) close(); });   // click on the backdrop
+  actions.querySelector('[data-cancel]').addEventListener('click', close);
+  dlg.querySelector('form').addEventListener('submit', e=>{
+    e.preventDefault();
+    Object.assign(flight, readFlightForm(), { updatedAt: new Date().toISOString() });
+    saveData();
+    close();
+    flashStatus('Flight updated: ' + flight.dep + ' to ' + flight.arr);
+    if(onDone) onDone();
+  });
+  dlg.showModal();
 }
 
 function flashStatus(msg){
@@ -901,7 +955,7 @@ function stripHtml(f, canDelete, promoted){
     + `<span class="s-num s-rate ${rateClass(f.landingRate)}">${fmt(f.landingRate,0)}<small>fpm</small></span>`
     + `<span class="s-num s-g">${fmt(f.landingG,2)}<small>g</small></span>`
     + `<span class="s-tags">${tags}</span>`
-    + (canDelete ? `<button class="icon-btn s-del" type="button" data-id="${esc(f.id)}" aria-label="Delete flight ${esc(f.dep)} to ${esc(f.arr)} on ${esc(prettyDate(f.date))}">Delete</button>` : '')
+    + (canDelete ? `<span class="s-actions"><button class="icon-btn s-edit" type="button" data-id="${esc(f.id)}" aria-label="Edit flight ${esc(f.dep)} to ${esc(f.arr)} on ${esc(prettyDate(f.date))}">Edit</button><button class="icon-btn s-del" type="button" data-id="${esc(f.id)}" aria-label="Delete flight ${esc(f.dep)} to ${esc(f.arr)} on ${esc(prettyDate(f.date))}">Delete</button></span>` : '')
     + (f.notes ? `<p class="s-notes">${esc(f.notes)}</p>` : '')
     + `</article>`;
 }
@@ -935,7 +989,9 @@ function renderLogbook(){
 
   // one delegated listener handles every strip
   table.addEventListener('click', e=>{
-    const del = e.target.closest('.icon-btn');
+    const edit = e.target.closest('.s-edit');
+    if(edit){ openEditDialog(edit.dataset.id, draw); return; }
+    const del = e.target.closest('.s-del');
     if(del){
       if(getRole() !== 'owner') return;
       if(confirm('Delete this flight?')){
