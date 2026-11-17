@@ -212,10 +212,14 @@ function statsFor(list){
   };
 }
 
-function airportCounts(list){
+// field: 'arr' counts arrivals only. With no field, Southwest Virtual flights
+// count arrivals only (their legs chain, so a departure repeats the last
+// arrival) while other flights count both ends.
+function airportCounts(list, field){
   const counts = {};
   list.forEach(f=>{
-    counts[f.dep] = (counts[f.dep]||0)+1;
+    const arrOnly = field === 'arr' || (!field && f.sva);
+    if(!arrOnly) counts[f.dep] = (counts[f.dep]||0)+1;
     counts[f.arr] = (counts[f.arr]||0)+1;
   });
   return Object.entries(counts).sort((a,b)=>b[1]-a[1]);
@@ -798,7 +802,7 @@ function renderSVA(){
     addZoomControls('chartTFP');
   }
 
-  renderAirportBars('svaAirportTable', airportCounts(list), 8);
+  renderAirportBars('svaAirportTable', airportCounts(list, 'arr'), 8);
 }
 
 /* ===================== ADD FLIGHT FORM ===================== */
